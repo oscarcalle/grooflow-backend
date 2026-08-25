@@ -186,9 +186,13 @@ function grooflow_kv_bootstrap_keys(): array
         'data:treasuryInvoices',
         'data:treasuryBankBalance',
         'data:treasuryPaidHistory',
+        'data:treasurySubscriptions',
+        'data:treasuryBankMovements',
         'data:chartOfAccounts',
         'data:fleet',
         'data:inventory',
+        'data:reconciliation',
+        'settings:alertReadState',
     ];
 }
 
