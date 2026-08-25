@@ -1,0 +1,5 @@
+# Local / OS
+.DS_Store
+*.log
+.env
+.env.local
