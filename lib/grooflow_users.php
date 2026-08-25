@@ -218,6 +218,10 @@ function grooflow_user_to_app(PDO $pdo, array $row): array
     } elseif (! empty($extra['avatarUrl'])) {
         $user['avatarUrl'] = (string) $extra['avatarUrl'];
     }
+    $theme = $extra['theme'] ?? null;
+    if ($theme === 'light' || $theme === 'dark') {
+        $user['theme'] = $theme;
+    }
 
     return $user;
 }
@@ -312,10 +316,18 @@ function grooflow_upsert_user_from_app(PDO $pdo, array $user, bool $allowCreate 
 function grooflow_save_perfil(PDO $pdo, int $userId, array $user, string $role, int $nivelId): void
 {
     grooflow_ensure_perfil($pdo, $userId, $nivelId);
+    $existingPerfil = grooflow_load_perfil($pdo, $userId);
+    $existingExtra = isset($existingPerfil['extra_json'])
+        ? grooflow_json_decode((string) $existingPerfil['extra_json'])
+        : [];
+    $existingExtra = is_array($existingExtra) ? $existingExtra : [];
     $sedes = isset($user['sedes']) && is_array($user['sedes']) ? array_values($user['sedes']) : null;
     $allSedes = array_key_exists('allSedes', $user) ? (! empty($user['allSedes']) ? 1 : 0) : null;
     $extra = $user;
     unset($extra['id'], $extra['name'], $extra['email'], $extra['role'], $extra['status'], $extra['sedes'], $extra['allSedes']);
+    if (! array_key_exists('theme', $extra) && isset($existingExtra['theme'])) {
+        $extra['theme'] = $existingExtra['theme'];
+    }
 
     $pdo->prepare('
         UPDATE grooflow_perfiles
@@ -597,3 +609,23 @@ function grooflow_replace_roles(PDO $pdo, array $roles): void
         }
     }
 }
+
+function grooflow_set_own_theme(PDO $pdo, array $row, string $theme): void
+{
+    if ($theme !== 'light' && $theme !== 'dark') {
+        throw new InvalidArgumentException('Tema inválido');
+    }
+    $userId = (int) ($row['id'] ?? 0);
+    if ($userId <= 0) {
+        throw new RuntimeException('Sesión inválida');
+    }
+    grooflow_ensure_schema($pdo);
+    grooflow_ensure_perfil($pdo, $userId, (int) ($row['nivel_id'] ?? 0));
+    $perfil = grooflow_load_perfil($pdo, $userId);
+    $extra = isset($perfil['extra_json']) ? grooflow_json_decode((string) $perfil['extra_json']) : [];
+    $extra = is_array($extra) ? $extra : [];
+    $extra['theme'] = $theme;
+    $pdo->prepare('UPDATE grooflow_perfiles SET extra_json = ? WHERE usuario_id = ?')
+        ->execute([grooflow_json_encode($extra), $userId]);
+}
+

@@ -16,6 +16,7 @@ require_once dirname(__DIR__) . '/lib/grooflow_acl.php';
 require_once dirname(__DIR__) . '/lib/grooflow_kv.php';
 require_once dirname(__DIR__) . '/lib/grooflow_collections.php';
 require_once dirname(__DIR__) . '/lib/grooflow_proxy.php';
+require_once dirname(__DIR__) . '/lib/grooflow_audit.php';
 
 unset($_GET['token']);
 
@@ -171,6 +172,45 @@ function grooflow_dispatch(PDO $pdo): void
             ],
             'profile' => $appUser,
         ]);
+
+        return;
+    }
+
+    if ($path === '/auth/theme' && $method === 'POST') {
+        $row = api_current_user();
+        if (! is_array($row)) {
+            throw new RuntimeException('Sesión inválida');
+        }
+        $data = api_request_json();
+        grooflow_set_own_theme($pdo, $row, (string) ($data['theme'] ?? ''));
+        api_json_response(['ok' => true]);
+
+        return;
+    }
+
+    if ($path === '/audit' && $method === 'POST') {
+        $row = api_current_user();
+        if (! is_array($row)) {
+            throw new RuntimeException('Sesión inválida');
+        }
+        $data = api_request_json();
+        $metadata = $data['metadata'] ?? [];
+        grooflow_audit_insert(
+            $pdo,
+            $row,
+            (string) ($data['action'] ?? ''),
+            is_array($metadata) ? $metadata : [],
+            isset($data['targetUserId']) ? (string) $data['targetUserId'] : null
+        );
+        api_json_response(['ok' => true]);
+
+        return;
+    }
+
+    if ($path === '/audit' && $method === 'GET') {
+        grooflow_assert_admin($pdo);
+        $limit = (int) ($_GET['limit'] ?? 80);
+        api_json_response(['ok' => true, 'rows' => grooflow_audit_list($pdo, $limit)]);
 
         return;
     }
