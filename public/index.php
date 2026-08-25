@@ -12,9 +12,12 @@ require_once $grooflowRoot . '/backend/lib/api_request.php';
 require_once $grooflowRoot . '/backend/lib/auth_api.php';
 require_once dirname(__DIR__) . '/lib/grooflow_schema.php';
 require_once dirname(__DIR__) . '/lib/grooflow_users.php';
+require_once dirname(__DIR__) . '/lib/grooflow_acl.php';
 require_once dirname(__DIR__) . '/lib/grooflow_kv.php';
 require_once dirname(__DIR__) . '/lib/grooflow_collections.php';
 require_once dirname(__DIR__) . '/lib/grooflow_proxy.php';
+
+unset($_GET['token']);
 
 grooflow_cors_headers();
 
@@ -31,11 +34,16 @@ try {
     api_json_response(['ok' => false, 'error' => $e->getMessage()], 422);
 } catch (RuntimeException $e) {
     $msg = $e->getMessage();
-    $status = str_contains(strtolower($msg), 'no encontrado') || str_contains(strtolower($msg), 'inválid')
-        ? 404
-        : 400;
-    if (stripos($msg, 'sesión') !== false || stripos($msg, 'contraseña') !== false || stripos($msg, 'credencial') !== false) {
+    $lower = strtolower($msg);
+    $status = 400;
+    if (str_contains($lower, 'no encontrado') || str_contains($lower, 'inválid')) {
+        $status = 404;
+    }
+    if (str_contains($lower, 'sesión') || str_contains($lower, 'contraseña') || str_contains($lower, 'credencial')) {
         $status = 401;
+    }
+    if (str_contains($lower, 'permiso') || str_contains($lower, 'administrador')) {
+        $status = 403;
     }
     api_json_response(['ok' => false, 'error' => $msg], $status);
 } catch (Throwable $e) {
@@ -85,6 +93,12 @@ function grooflow_request_path(): string
 function grooflow_dispatch(PDO $pdo): void
 {
     grooflow_ensure_schema($pdo);
+    $contentLength = (int) ($_SERVER['CONTENT_LENGTH'] ?? 0);
+    if ($contentLength > 8 * 1024 * 1024) {
+        api_json_response(['ok' => false, 'error' => 'Payload demasiado grande'], 413);
+
+        return;
+    }
     $method = api_request_method();
     $path = grooflow_request_path();
 
@@ -132,7 +146,11 @@ function grooflow_dispatch(PDO $pdo): void
     api_require_auth($pdo);
 
     if ($path === '/bootstrap' && $method === 'GET') {
-        api_json_response(['ok' => true, 'values' => grooflow_kv_bootstrap($pdo)]);
+        $values = grooflow_kv_bootstrap($pdo);
+        foreach ($values as $key => $value) {
+            $values[$key] = grooflow_kv_value_for_caller($pdo, (string) $key, $value);
+        }
+        api_json_response(['ok' => true, 'values' => $values]);
 
         return;
     }
@@ -229,7 +247,7 @@ function grooflow_dispatch(PDO $pdo): void
     if (preg_match('#^/kv/(.+)$#', $path, $m)) {
         $key = grooflow_normalize_kv_key($m[1]);
         if ($method === 'GET') {
-            $value = grooflow_kv_get($pdo, $key);
+            $value = grooflow_kv_value_for_caller($pdo, $key, grooflow_kv_get($pdo, $key));
             api_json_response(['ok' => true, 'key' => $key, 'value' => $value]);
 
             return;
@@ -237,12 +255,15 @@ function grooflow_dispatch(PDO $pdo): void
         if ($method === 'PUT' || $method === 'POST') {
             $data = api_request_json();
             $value = array_key_exists('value', $data) ? $data['value'] : $data;
-            grooflow_kv_set($pdo, $key, $value);
+            grooflow_kv_set($pdo, $key, grooflow_prepare_kv_write($pdo, $key, $value));
             api_json_response(['ok' => true]);
 
             return;
         }
         if ($method === 'DELETE') {
+            if (in_array($key, ['data:users', 'data:roles', 'settings:asistencia', 'settings:system'], true)) {
+                grooflow_assert_admin($pdo);
+            }
             grooflow_kv_delete($pdo, $key);
             api_json_response(['ok' => true]);
 
@@ -258,6 +279,7 @@ function grooflow_dispatch(PDO $pdo): void
             return;
         }
         if ($method === 'POST') {
+            grooflow_enforce_collection_write($pdo, $name);
             $record = api_request_json();
             $created = grooflow_collection_create($pdo, $name, $record);
             api_json_response(['ok' => true, 'item' => $created]);
@@ -267,6 +289,7 @@ function grooflow_dispatch(PDO $pdo): void
     }
 
     if (preg_match('#^/collections/([A-Za-z0-9_-]+)/upsert$#', $path, $m) && $method === 'POST') {
+        grooflow_enforce_collection_write($pdo, $m[1]);
         $data = api_request_json();
         $records = $data['records'] ?? $data['items'] ?? $data;
         grooflow_collection_upsert_many($pdo, $m[1], is_array($records) ? $records : []);
@@ -290,12 +313,14 @@ function grooflow_dispatch(PDO $pdo): void
             return;
         }
         if ($method === 'PUT' || $method === 'PATCH') {
+            grooflow_enforce_collection_write($pdo, $name);
             $updated = grooflow_collection_update($pdo, $name, $id, api_request_json());
             api_json_response(['ok' => true, 'item' => $updated]);
 
             return;
         }
         if ($method === 'DELETE') {
+            grooflow_enforce_collection_write($pdo, $name);
             grooflow_collection_delete($pdo, $name, $id);
             api_json_response(['ok' => true]);
 
@@ -304,18 +329,4 @@ function grooflow_dispatch(PDO $pdo): void
     }
 
     api_json_response(['ok' => false, 'error' => 'Ruta no encontrada'], 404);
-}
-
-function grooflow_assert_admin(PDO $pdo): void
-{
-    $row = api_current_user();
-    if (! is_array($row)) {
-        throw new RuntimeException('Sesión inválida');
-    }
-    grooflow_ensure_perfil($pdo, (int) $row['id'], (int) ($row['nivel_id'] ?? 0));
-    $app = grooflow_user_to_app($pdo, $row);
-    $role = (string) ($app['role'] ?? '');
-    if ((int) ($row['nivel_id'] ?? 0) !== 2 && ! in_array($role, ['super_admin', 'admin'], true)) {
-        throw new RuntimeException('Se requieren permisos de administrador');
-    }
 }

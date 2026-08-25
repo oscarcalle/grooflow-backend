@@ -256,7 +256,7 @@ function grooflow_upsert_user_from_app(PDO $pdo, array $user, bool $allowCreate 
     $id = (int) preg_replace('/\D+/', '', (string) ($user['id'] ?? '0'));
     $email = strtolower(trim((string) ($user['email'] ?? '')));
     $name = trim((string) ($user['name'] ?? ''));
-    $role = trim((string) ($user['role'] ?? 'groomer')) ?: 'groomer';
+    $role = grooflow_clamp_assignable_role((string) ($user['role'] ?? 'groomer'));
     $status = (($user['status'] ?? 'active') === 'inactive') ? 'inactivo' : 'activo';
 
     $row = null;
@@ -356,7 +356,7 @@ function grooflow_create_gestion_user(PDO $pdo, array $user, string $password = 
 {
     $email = strtolower(trim((string) ($user['email'] ?? '')));
     $name = trim((string) ($user['name'] ?? $email));
-    $role = trim((string) ($user['role'] ?? 'groomer')) ?: 'groomer';
+    $role = grooflow_clamp_assignable_role((string) ($user['role'] ?? 'groomer'));
     $username = $email !== '' ? explode('@', $email)[0] : ('gf' . substr(bin2hex(random_bytes(4)), 0, 8));
     $username = strtolower(preg_replace('/[^a-z0-9._-]+/', '', $username) ?: ('gf' . time()));
     $base = $username;
@@ -375,6 +375,8 @@ function grooflow_create_gestion_user(PDO $pdo, array $user, string $password = 
     }
     if ($password === '') {
         $password = bin2hex(random_bytes(6));
+    } else {
+        grooflow_validate_password($password);
     }
 
     [$nombre, $apellido] = grooflow_split_name($name);
@@ -476,9 +478,7 @@ function grooflow_find_gestion_user(PDO $pdo, string $idOrEmail): ?array
 
 function grooflow_set_password(PDO $pdo, string $idOrEmail, string $password): void
 {
-    if (strlen($password) < 6) {
-        throw new InvalidArgumentException('La contraseña es demasiado corta');
-    }
+    grooflow_validate_password($password);
     $user = grooflow_find_gestion_user($pdo, $idOrEmail);
     if (! $user) {
         throw new RuntimeException('Usuario no encontrado');
