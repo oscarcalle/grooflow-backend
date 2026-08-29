@@ -21,4 +21,11 @@ VITE_GROOFLOW_API_URL=http://127.0.0.1:8091
 
 CORS: el API refleja el `Origin` del SPA (Hostinger, Vite local y `https://*.vercel.app`). Ver `lib/grooflow_cors.php`.
 
-**GitHub ≠ Hostinger.** Un push a este repo no actualiza el servidor. El deploy es un paso aparte (`./deploy/hostinger/deploy-ssh.sh` en el panel Gestión, con `ssh.env` local que no se sube a git).
+**GitHub ≠ Hostinger.** Un push no actualiza el servidor.
+
+Desde **este repo** (solo PHP GrooFlow, no el panel ni el SPA):
+
+```bash
+cp deploy/ssh.env.example deploy/ssh.env   # completar; no commitear
+./deploy/deploy-hostinger.sh
+```
