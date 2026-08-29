@@ -10,6 +10,7 @@ require_once $grooflowRoot . '/config.php';
 require_once $grooflowRoot . '/backend/lib/dashboard_helpers.php';
 require_once $grooflowRoot . '/backend/lib/api_request.php';
 require_once $grooflowRoot . '/backend/lib/auth_api.php';
+require_once dirname(__DIR__) . '/lib/grooflow_cors.php';
 require_once dirname(__DIR__) . '/lib/grooflow_schema.php';
 require_once dirname(__DIR__) . '/lib/grooflow_users.php';
 require_once dirname(__DIR__) . '/lib/grooflow_acl.php';
@@ -52,30 +53,6 @@ try {
 } catch (Throwable $e) {
     error_log('[grooflow] ' . $e->getMessage());
     api_json_response(['ok' => false, 'error' => 'Error interno de GrooFlow'], 500);
-}
-
-function grooflow_cors_headers(): void
-{
-    $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
-    $allowed = array_filter(array_map('trim', explode(',', env_value('API_CORS_ORIGINS', 'http://localhost:4200') ?? 'http://localhost:4200')));
-    $allowed[] = 'http://localhost:5173';
-    $allowed[] = 'http://127.0.0.1:5173';
-    $allowed[] = 'https://gestionveterinariagroomers.com';
-    $allowed[] = 'http://gestionveterinariagroomers.com';
-    $allowed = array_values(array_unique($allowed));
-
-    if ($origin !== '' && in_array($origin, $allowed, true)) {
-        header('Access-Control-Allow-Origin: ' . $origin);
-        header('Access-Control-Allow-Credentials: true');
-    } elseif ($origin === '') {
-        header('Access-Control-Allow-Origin: *');
-    } elseif ($allowed) {
-        header('Access-Control-Allow-Origin: ' . $allowed[0]);
-    }
-
-    header('Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS');
-    header('Access-Control-Allow-Headers: Authorization, Content-Type, X-Groomers-Client');
-    header('Vary: Origin');
 }
 
 function grooflow_request_path(): string
