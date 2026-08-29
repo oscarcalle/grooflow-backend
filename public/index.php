@@ -17,6 +17,8 @@ require_once dirname(__DIR__) . '/lib/grooflow_kv.php';
 require_once dirname(__DIR__) . '/lib/grooflow_collections.php';
 require_once dirname(__DIR__) . '/lib/grooflow_proxy.php';
 require_once dirname(__DIR__) . '/lib/grooflow_audit.php';
+require_once dirname(__DIR__) . '/lib/grooflow_menu.php';
+require_once dirname(__DIR__) . '/lib/grooflow_usuario_menu.php';
 
 unset($_GET['token']);
 
@@ -72,7 +74,7 @@ function grooflow_cors_headers(): void
     }
 
     header('Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS');
-    header('Access-Control-Allow-Headers: Authorization, Content-Type');
+    header('Access-Control-Allow-Headers: Authorization, Content-Type, X-Groomers-Client');
     header('Vary: Origin');
 }
 
@@ -120,6 +122,7 @@ function grooflow_dispatch(PDO $pdo): void
             grooflow_ensure_perfil($pdo, (int) $row['id'], (int) $row['nivel_id']);
         }
         $appUser = $row ? grooflow_user_to_app($pdo, $row) : null;
+        $nivelId = $row ? (int) ($row['nivel_id'] ?? 0) : 0;
         api_json_response([
             'ok' => true,
             'token' => $result['token'] ?? '',
@@ -129,6 +132,10 @@ function grooflow_dispatch(PDO $pdo): void
                 'name' => (string) ($appUser['name'] ?? $result['user']['display_name'] ?? $username),
             ],
             'profile' => $appUser,
+            'menu_permissions' => $row ? grooflow_menu_permissions_for_nivel($pdo, $nivelId) : [],
+            'menu' => $row ? grooflow_menu_nav_for_user($pdo, $nivelId) : [],
+            'menu_sections' => $row ? grooflow_menu_nav_sections_for_user($pdo, $nivelId) : [],
+            'nivel_id' => $nivelId,
         ]);
 
         return;
@@ -163,6 +170,8 @@ function grooflow_dispatch(PDO $pdo): void
         }
         grooflow_ensure_perfil($pdo, (int) $row['id'], (int) ($row['nivel_id'] ?? 0));
         $appUser = grooflow_user_to_app($pdo, $row);
+        $nivelId = (int) ($row['nivel_id'] ?? 0);
+        $menuPermissions = grooflow_menu_permissions_for_nivel($pdo, $nivelId);
         api_json_response([
             'ok' => true,
             'user' => [
@@ -171,6 +180,10 @@ function grooflow_dispatch(PDO $pdo): void
                 'name' => (string) $appUser['name'],
             ],
             'profile' => $appUser,
+            'menu_permissions' => $menuPermissions,
+            'menu' => grooflow_menu_nav_for_user($pdo, $nivelId),
+            'menu_sections' => grooflow_menu_nav_sections_for_user($pdo, $nivelId),
+            'nivel_id' => $nivelId,
         ]);
 
         return;
@@ -280,6 +293,141 @@ function grooflow_dispatch(PDO $pdo): void
     if (preg_match('#^/proxy/buk/(test|fetch|fetch-all)$#', $path, $m) && $method === 'POST') {
         grooflow_assert_admin($pdo);
         api_json_response(['ok' => true, ...grooflow_handle_buk($m[1], api_request_json())]);
+
+        return;
+    }
+
+    if ($path === '/menu/tree' && $method === 'GET') {
+        grooflow_assert_admin($pdo);
+        api_json_response(['ok' => true, 'items' => grooflow_menu_list_tree($pdo), ...grooflow_menu_tree($pdo)]);
+
+        return;
+    }
+
+    if ($path === '/menu/reorder' && $method === 'POST') {
+        grooflow_assert_admin($pdo);
+        $data = api_request_json();
+        $items = is_array($data['items'] ?? null) ? $data['items'] : [];
+        $rows = grooflow_menu_reorder($pdo, $items);
+        api_json_response(['ok' => true, 'items' => $rows]);
+
+        return;
+    }
+
+    if ($path === '/menu' && $method === 'POST') {
+        grooflow_assert_admin($pdo);
+        $item = grooflow_menu_create($pdo, api_request_json());
+        api_json_response(['ok' => true, 'item' => $item]);
+
+        return;
+    }
+
+    if ($path === '/menu' && ($method === 'PUT' || $method === 'PATCH')) {
+        grooflow_assert_admin($pdo);
+        $data = api_request_json();
+        $id = (int) ($data['id'] ?? 0);
+        $item = grooflow_menu_update($pdo, $id, $data);
+        api_json_response(['ok' => true, 'item' => $item]);
+
+        return;
+    }
+
+    if ($path === '/menu' && $method === 'DELETE') {
+        grooflow_assert_admin($pdo);
+        $id = (int) ($_GET['id'] ?? 0);
+        grooflow_menu_delete($pdo, $id);
+        api_json_response(['ok' => true]);
+
+        return;
+    }
+
+    if ($path === '/nivel-menu/matrix' && $method === 'GET') {
+        grooflow_assert_admin($pdo);
+        api_json_response(['ok' => true, ...grooflow_nivel_menu_matrix($pdo)]);
+
+        return;
+    }
+
+    if ($path === '/nivel-menu/nivel' && $method === 'GET') {
+        grooflow_assert_admin($pdo);
+        $nivelId = (int) ($_GET['nivel_id'] ?? 0);
+        api_json_response(['ok' => true, ...grooflow_nivel_menu_for_nivel($pdo, $nivelId)]);
+
+        return;
+    }
+
+    if ($path === '/nivel-menu/sync' && ($method === 'PUT' || $method === 'POST')) {
+        grooflow_assert_admin($pdo);
+        $data = api_request_json();
+        $nivelId = (int) ($data['nivel_id'] ?? 0);
+        $menuIds = is_array($data['menu_ids'] ?? null) ? $data['menu_ids'] : [];
+        $menuPermissions = is_array($data['menu_permissions'] ?? null) ? $data['menu_permissions'] : [];
+        $result = grooflow_nivel_menu_sync($pdo, $nivelId, $menuIds, $menuPermissions);
+        api_json_response(['ok' => true, ...$result]);
+
+        return;
+    }
+
+    if ($path === '/nivel-menu/apply-users' && $method === 'POST') {
+        grooflow_assert_admin($pdo);
+        $data = api_request_json();
+        $nivelId = (int) ($data['nivel_id'] ?? 0);
+        $onlyWithExtras = ! array_key_exists('only_with_extras', $data) || ! empty($data['only_with_extras']);
+        $cleared = grooflow_nivel_menu_apply_to_users($pdo, $nivelId, $onlyWithExtras);
+        api_json_response(['ok' => true, 'cleared' => $cleared]);
+
+        return;
+    }
+
+    if ($path === '/usuarios/list' && $method === 'GET') {
+        grooflow_assert_admin($pdo);
+        api_json_response(['ok' => true, 'items' => grooflow_usuarios_list($pdo)]);
+
+        return;
+    }
+
+    if ($path === '/usuario-menu/unassigned' && $method === 'GET') {
+        grooflow_assert_admin($pdo);
+        api_json_response(['ok' => true, 'items' => grooflow_usuario_menu_unassigned_users($pdo)]);
+
+        return;
+    }
+
+    if ($path === '/usuario-menu/user' && $method === 'GET') {
+        grooflow_assert_admin($pdo);
+        $usuarioId = (int) ($_GET['usuario_id'] ?? 0);
+        api_json_response(['ok' => true, ...grooflow_usuario_menu_for_user($pdo, $usuarioId)]);
+
+        return;
+    }
+
+    if ($path === '/usuario-menu/sync' && ($method === 'PUT' || $method === 'POST')) {
+        grooflow_assert_admin($pdo);
+        $data = api_request_json();
+        $usuarioId = (int) ($data['usuario_id'] ?? 0);
+        $menuIds = is_array($data['menu_ids'] ?? null) ? $data['menu_ids'] : [];
+        $result = grooflow_usuario_menu_sync($pdo, $usuarioId, $menuIds);
+        api_json_response(['ok' => true, ...$result]);
+
+        return;
+    }
+
+    if ($path === '/usuario-menu/assign-dashboard' && $method === 'POST') {
+        grooflow_assert_admin($pdo);
+        $data = api_request_json();
+        $usuarioId = isset($data['usuario_id']) ? (int) $data['usuario_id'] : null;
+        if ($usuarioId !== null && $usuarioId <= 0) {
+            $usuarioId = null;
+        }
+        $assigned = grooflow_usuario_menu_assign_dashboard($pdo, $usuarioId);
+        api_json_response(['ok' => true, 'assigned' => $assigned]);
+
+        return;
+    }
+
+    if ($path === '/niveles' && $method === 'GET') {
+        grooflow_assert_admin($pdo);
+        api_json_response(['ok' => true, 'items' => grooflow_niveles_list($pdo)]);
 
         return;
     }

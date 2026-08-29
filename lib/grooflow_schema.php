@@ -147,6 +147,9 @@ function grooflow_ensure_schema(PDO $pdo): void
     }
 
     grooflow_seed_roles($pdo);
+
+    require_once __DIR__ . '/grooflow_menu.php';
+    grooflow_menu_ensure_seed($pdo);
 }
 
 function grooflow_seed_roles(PDO $pdo): void
