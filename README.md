@@ -15,6 +15,23 @@ VITE_BACKEND=rest
 VITE_GROOFLOW_API_URL=http://127.0.0.1:8091
 ```
 
+## Asistencia (tablas MySQL)
+
+Al primer request autenticado, `grooflow_ensure_schema()` crea:
+
+| Tabla | Contenido |
+|-------|-----------|
+| `grooflow_asistencia_meta` | Buk + keywords |
+| `grooflow_asistencia_staff` | Personal / organigrama |
+| `grooflow_asistencia_requirements` | Dotación mínima |
+| `grooflow_asistencia_sede_profiles` | Horarios / columnas por sede |
+| `grooflow_asistencia_sede_mappings` | Sede ↔ recinto Buk |
+| `grooflow_asistencia_snapshots` | Historial diario |
+| `grooflow_asistencia_operational` | Contexto alertas |
+
+Claves KV: `settings:asistencia`, `data:asistencia-snapshots`, `data:asistencia-operational`.
+DDL de referencia: `sql/asistencia_schema.sql`.
+
 ## Producción
 
 `https://gestionveterinariagroomers.com/grooflow/api/`

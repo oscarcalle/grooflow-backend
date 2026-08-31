@@ -146,7 +146,11 @@ function grooflow_ensure_schema(PDO $pdo): void
         grooflow_ensure_payload_table($pdo, $table);
     }
 
+    require_once __DIR__ . '/grooflow_asistencia.php';
+    grooflow_asistencia_ensure_schema($pdo);
+
     grooflow_seed_roles($pdo);
+    grooflow_asistencia_backfill_role_permissions($pdo);
 
     require_once __DIR__ . '/grooflow_menu.php';
     grooflow_menu_ensure_seed($pdo);
@@ -188,7 +192,8 @@ function grooflow_default_roles(): array
         'Estado de Resultados' => true, 'Honorarios' => true, 'Cuentas por Pagar' => true,
         'Caja Chica' => true, 'Compras' => true, 'Productos' => true, 'Proveedores' => true,
         'Contabilidad' => true, 'Gestión Vehicular' => true, 'Gestión de Inventario' => true,
-        'Asistencia' => true, 'Reportes' => true, 'Auditoría' => true, 'Conciliación' => true,
+        'Asistencia' => true, 'Turnos' => true, 'Accidentes de Trabajo' => true,
+        'Entrega de Uniformes' => true, 'Reportes' => true, 'Auditoría' => true, 'Conciliación' => true,
         'Usuarios' => true, 'Configuración' => true,
     ];
 
@@ -230,8 +235,9 @@ function grooflow_default_roles(): array
                 'Flujo de Caja' => false, 'Estado de Resultados' => false, 'Honorarios' => false,
                 'Cuentas por Pagar' => false, 'Compras' => false, 'Productos' => false,
                 'Proveedores' => false, 'Contabilidad' => false, 'Gestión Vehicular' => false,
-                'Gestión de Inventario' => false, 'Asistencia' => false, 'Usuarios' => false,
-                'Configuración' => false,
+                'Gestión de Inventario' => false, 'Asistencia' => false, 'Turnos' => false,
+                'Accidentes de Trabajo' => true, 'Entrega de Uniformes' => false,
+                'Usuarios' => false, 'Configuración' => false,
             ]),
         ],
         [

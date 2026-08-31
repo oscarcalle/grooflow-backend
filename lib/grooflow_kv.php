@@ -12,6 +12,21 @@ function grooflow_kv_get(PDO $pdo, string $key): mixed
     if ($key === 'data:roles') {
         return grooflow_list_roles($pdo);
     }
+    if ($key === 'settings:asistencia') {
+        require_once __DIR__ . '/grooflow_asistencia.php';
+
+        return grooflow_asistencia_get_settings($pdo);
+    }
+    if ($key === 'data:asistencia-snapshots') {
+        require_once __DIR__ . '/grooflow_asistencia.php';
+
+        return grooflow_asistencia_list_snapshots($pdo);
+    }
+    if ($key === 'data:asistencia-operational') {
+        require_once __DIR__ . '/grooflow_asistencia.php';
+
+        return grooflow_asistencia_get_operational($pdo);
+    }
 
     $table = grooflow_kv_array_tables()[$key] ?? null;
     if ($table !== null) {
@@ -43,6 +58,24 @@ function grooflow_kv_set(PDO $pdo, string $key, mixed $value): void
     }
     if ($key === 'data:roles') {
         grooflow_replace_roles($pdo, is_array($value) ? $value : []);
+
+        return;
+    }
+    if ($key === 'settings:asistencia') {
+        require_once __DIR__ . '/grooflow_asistencia.php';
+        grooflow_asistencia_set_settings($pdo, is_array($value) ? $value : []);
+
+        return;
+    }
+    if ($key === 'data:asistencia-snapshots') {
+        require_once __DIR__ . '/grooflow_asistencia.php';
+        grooflow_asistencia_replace_snapshots($pdo, is_array($value) ? $value : []);
+
+        return;
+    }
+    if ($key === 'data:asistencia-operational') {
+        require_once __DIR__ . '/grooflow_asistencia.php';
+        grooflow_asistencia_set_operational($pdo, is_array($value) ? $value : []);
 
         return;
     }
@@ -170,9 +203,14 @@ function grooflow_kv_bootstrap_keys(): array
         'settings:config',
         'settings:system',
         'settings:asistencia',
+        'settings:turnos',
+        'settings:accidentes-trabajo',
+        'settings:entrega-uniformes',
         'settings:theme',
         'settings:alertThresholds',
         'maintenance:transactionsClearedAt',
+        'data:asistencia-snapshots',
+        'data:asistencia-operational',
         'data:transactions',
         'data:invoices',
         'data:providers',

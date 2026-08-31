@@ -136,8 +136,10 @@ function grooflow_prepare_kv_write(PDO $pdo, string $key, mixed $value): mixed
         return $value;
     }
     if ($key === 'settings:asistencia') {
-        grooflow_assert_admin($pdo);
-
+        // Gerentes/encargados pueden guardar staff/sede; el token Buk se preserva si llega redactado.
+        return grooflow_merge_keep_secrets(grooflow_kv_get($pdo, $key), $value);
+    }
+    if (in_array($key, ['data:asistencia-snapshots', 'data:asistencia-operational'], true)) {
         return $value;
     }
     if ($key === 'settings:system' && ! grooflow_caller_is_admin($pdo)) {

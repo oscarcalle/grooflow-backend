@@ -4,3 +4,4 @@
 .env
 .env.local
 deploy/ssh.env
+deploy/env.ssh
