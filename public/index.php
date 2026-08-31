@@ -25,6 +25,9 @@ unset($_GET['token']);
 
 grooflow_cors_headers();
 
+// Todas las rutas del API GrooFlow deben tratarse como cliente grooflow (permiso acceso_grooflow en login).
+$_SERVER['HTTP_X_GROOMERS_CLIENT'] = 'grooflow';
+
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(204);
     exit;
