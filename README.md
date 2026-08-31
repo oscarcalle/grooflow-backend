@@ -44,5 +44,8 @@ Desde **este repo** (solo PHP GrooFlow, no el panel ni el SPA):
 
 ```bash
 cp deploy/ssh.env.example deploy/ssh.env   # completar; no commitear
-./deploy/deploy-hostinger.sh
+./deploy/deploy-hostinger.sh              # solo backend (rsync/bash)
+python deploy/deploy-hostinger-sftp.py    # frontend dist + backend (SFTP)
 ```
+
+El script SFTP verifica que `index.html` en el servidor coincida con el build local (evita servir bundles viejos).
