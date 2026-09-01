@@ -270,8 +270,8 @@ function grooflow_dispatch(PDO $pdo): void
         return;
     }
 
-    if (preg_match('#^/proxy/buk/(test|fetch|fetch-all)$#', $path, $m) && $method === 'POST') {
-        if ($m[1] === 'test') {
+    if (preg_match('#^/proxy/buk/(test|fetch|fetch-all|probe)$#', $path, $m) && $method === 'POST') {
+        if ($m[1] === 'test' || $m[1] === 'probe') {
             grooflow_assert_admin($pdo);
         }
         api_json_response(['ok' => true, ...grooflow_handle_buk($pdo, $m[1], api_request_json())]);

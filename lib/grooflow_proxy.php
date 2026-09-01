@@ -270,6 +270,49 @@ function grooflow_handle_veterinari_test(array $data): array
     ];
 }
 
+function grooflow_build_buk_target_url(string $baseUrl, string $targetUrl, string $pathOrUrl): string
+{
+    $targetUrl = trim($targetUrl);
+    if ($targetUrl !== '') {
+        if (! str_starts_with(strtolower($targetUrl), 'http')) {
+            $base = grooflow_sanitize_buk_base_url($baseUrl);
+
+            return rtrim($base, '/') . '/' . ltrim($targetUrl, '/');
+        }
+
+        return $targetUrl;
+    }
+    $pathOrUrl = trim($pathOrUrl);
+    if ($pathOrUrl === '') {
+        throw new InvalidArgumentException('Indica targetUrl o path.');
+    }
+    if (str_starts_with(strtolower($pathOrUrl), 'http')) {
+        return $pathOrUrl;
+    }
+    $base = grooflow_sanitize_buk_base_url($baseUrl);
+
+    return rtrim($base, '/') . '/' . ltrim($pathOrUrl, '/');
+}
+
+/** @return list<array<string, mixed>> */
+function grooflow_buk_extract_records(mixed $json): array
+{
+    if (! is_array($json)) {
+        return [];
+    }
+    if (isset($json['data']) && is_array($json['data'])) {
+        $data = $json['data'];
+        if ($data === [] || array_keys($data) === range(0, count($data) - 1)) {
+            return $data;
+        }
+    }
+    if (array_keys($json) === range(0, count($json) - 1)) {
+        return $json;
+    }
+
+    return [];
+}
+
 function grooflow_handle_buk(PDO $pdo, string $action, array $data): array
 {
     $baseUrl = grooflow_sanitize_buk_base_url((string) ($data['baseUrl'] ?? $data['url'] ?? ''));
@@ -300,6 +343,41 @@ function grooflow_handle_buk(PDO $pdo, string $action, array $data): array
                 : ('HTTP ' . $res['status'] . ' — URL: ' . $testUrl),
             'recordHint' => $count ? ($count . ' registros') : null,
             'triedUrl' => $testUrl,
+            'durationMs' => $duration,
+        ];
+    }
+
+    if ($action === 'probe') {
+        $targetUrl = grooflow_build_buk_target_url(
+            $baseUrl,
+            (string) ($data['targetUrl'] ?? ''),
+            (string) ($data['path'] ?? $data['pathOrUrl'] ?? '')
+        );
+        grooflow_assert_buk_url($targetUrl);
+        $res = grooflow_proxy_fetch($targetUrl, [
+            'token: ' . $apiToken,
+            'Accept: application/json',
+        ], 60);
+        $json = json_decode($res['body'], true);
+        $records = grooflow_buk_extract_records($json);
+        $parsed = grooflow_parse_buk_asistencia_page($json);
+        $count = $parsed['count'] > 0 ? $parsed['count'] : count($records);
+        $duration = (int) round(microtime(true) * 1000) - $started;
+        $ok = $res['status'] >= 200 && $res['status'] < 300;
+        $snippet = substr(preg_replace('/\s+/', ' ', $res['body']) ?? '', 0, 300);
+
+        return [
+            'ok' => $ok,
+            'status' => $res['status'],
+            'message' => $ok
+                ? ($count > 0 ? ('OK. ' . $count . ' registro(s) detectados.') : 'OK. Respuesta sin arreglo de registros (revisa campos en el explorador).')
+                : ('HTTP ' . $res['status'] . ': ' . ($snippet !== '' ? $snippet : 'sin detalle')),
+            'data' => $records,
+            'sample' => array_slice($records, 0, 3),
+            'recordCount' => $count,
+            'pagination' => is_array($json) && is_array($json['pagination'] ?? null) ? $json['pagination'] : null,
+            'rawPreview' => is_array($json) ? array_slice($json, 0, 20, true) : null,
+            'triedUrl' => $targetUrl,
             'durationMs' => $duration,
         ];
     }
