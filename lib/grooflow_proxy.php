@@ -442,3 +442,163 @@ function grooflow_handle_buk(PDO $pdo, string $action, array $data): array
         'durationMs' => $duration,
     ];
 }
+
+function grooflow_assert_buk_pe_url(string $url): void
+{
+    $parts = grooflow_assert_https_public_url($url);
+    $host = strtolower((string) $parts['host']);
+    $allowed =
+        str_ends_with($host, '.buk.pe') ||
+        str_ends_with($host, '.buk.cl') ||
+        str_ends_with($host, '.buk.co') ||
+        str_ends_with($host, '.buk.com.br');
+    if (! $allowed) {
+        throw new InvalidArgumentException('URL de destino no permitida para Buk.pe.');
+    }
+}
+
+function grooflow_sanitize_buk_pe_base_url(string $raw): string
+{
+    $s = trim($raw);
+    if ($s === '') {
+        return 'https://veterinariagroomers.buk.pe/api/v1/peru';
+    }
+    $s = preg_split('/[#?]/', $s)[0] ?? $s;
+    $s = rtrim($s, '/');
+    $s = preg_replace('#/employees(/.*)?$#i', '', $s);
+    $s = rtrim($s, '/');
+    if (! str_starts_with(strtolower($s), 'http')) {
+        $s = 'https://' . $s;
+    }
+    $parts = parse_url($s);
+    if (! is_array($parts)) {
+        return 'https://veterinariagroomers.buk.pe/api/v1/peru';
+    }
+    $path = rtrim((string) ($parts['path'] ?? ''), '/');
+    if (! str_contains($path, '/api/v1/')) {
+        return 'https://veterinariagroomers.buk.pe/api/v1/peru';
+    }
+
+    return rtrim(((string) ($parts['scheme'] ?? 'https')) . '://' . ((string) ($parts['host'] ?? '')) . $path, '/');
+}
+
+function grooflow_build_buk_pe_target_url(string $baseUrl, string $targetUrl, string $pathOrUrl): string
+{
+    $targetUrl = trim($targetUrl);
+    if ($targetUrl !== '') {
+        if (! str_starts_with(strtolower($targetUrl), 'http')) {
+            $base = grooflow_sanitize_buk_pe_base_url($baseUrl);
+
+            return rtrim($base, '/') . '/' . ltrim($targetUrl, '/');
+        }
+
+        return $targetUrl;
+    }
+    $pathOrUrl = trim($pathOrUrl);
+    if ($pathOrUrl === '') {
+        throw new InvalidArgumentException('Indica targetUrl o path.');
+    }
+    if (str_starts_with(strtolower($pathOrUrl), 'http')) {
+        return $pathOrUrl;
+    }
+    $base = grooflow_sanitize_buk_pe_base_url($baseUrl);
+
+    return rtrim($base, '/') . '/' . ltrim($pathOrUrl, '/');
+}
+
+function grooflow_resolve_buk_pe_api_token(PDO $pdo, string $apiToken): string
+{
+    $apiToken = grooflow_normalize_buk_token($apiToken);
+    if (! grooflow_buk_token_is_redacted($apiToken)) {
+        return $apiToken;
+    }
+    $raw = grooflow_kv_get($pdo, 'settings:system');
+    if (! is_array($raw)) {
+        throw new InvalidArgumentException('Configura Buk.pe en Integraciones antes de consultar.');
+    }
+    $bukPe = is_array($raw['bukPe'] ?? null) ? $raw['bukPe'] : [];
+    $stored = grooflow_normalize_buk_token((string) ($bukPe['apiToken'] ?? ''));
+    if ($stored === '' || grooflow_buk_token_is_redacted($stored)) {
+        throw new InvalidArgumentException('Token Buk.pe no disponible. Un administrador debe guardarlo en Integraciones.');
+    }
+
+    return $stored;
+}
+
+/** @return list<string> */
+function grooflow_buk_pe_auth_headers(string $apiToken): array
+{
+    return [
+        'auth_token: ' . $apiToken,
+        'Accept: application/json',
+    ];
+}
+
+/** @param array<string, mixed> $data */
+function grooflow_handle_buk_pe(PDO $pdo, string $action, array $data): array
+{
+    $baseUrl = grooflow_sanitize_buk_pe_base_url((string) ($data['baseUrl'] ?? $data['url'] ?? ''));
+    $apiToken = grooflow_resolve_buk_pe_api_token($pdo, (string) ($data['apiToken'] ?? $data['token'] ?? ''));
+    $started = (int) round(microtime(true) * 1000);
+
+    if ($action === 'test') {
+        $targetUrl = trim((string) ($data['targetUrl'] ?? ''));
+        $testUrl = $targetUrl !== '' ? $targetUrl : grooflow_build_buk_pe_target_url($baseUrl, '', 'employees?page=1&page_size=5');
+        grooflow_assert_buk_pe_url($testUrl);
+        $res = grooflow_proxy_fetch($testUrl, grooflow_buk_pe_auth_headers($apiToken), 45);
+        $json = json_decode($res['body'], true);
+        $records = grooflow_buk_extract_records($json);
+        $count = count($records);
+        if (is_array($json) && isset($json['pagination']['total'])) {
+            $count = max($count, (int) $json['pagination']['total']);
+        }
+        $duration = (int) round(microtime(true) * 1000) - $started;
+
+        return [
+            'ok' => $res['status'] >= 200 && $res['status'] < 300,
+            'status' => $res['status'],
+            'message' => $res['status'] >= 200 && $res['status'] < 300
+                ? ('Conexión OK. ' . $count . ' empleado(s) detectados.')
+                : ('HTTP ' . $res['status'] . ' — URL: ' . $testUrl),
+            'recordHint' => $count ? ($count . ' registros') : null,
+            'triedUrl' => $testUrl,
+            'durationMs' => $duration,
+        ];
+    }
+
+    if ($action === 'probe') {
+        $targetUrl = grooflow_build_buk_pe_target_url(
+            $baseUrl,
+            (string) ($data['targetUrl'] ?? ''),
+            (string) ($data['path'] ?? $data['pathOrUrl'] ?? '')
+        );
+        grooflow_assert_buk_pe_url($targetUrl);
+        $res = grooflow_proxy_fetch($targetUrl, grooflow_buk_pe_auth_headers($apiToken), 60);
+        $json = json_decode($res['body'], true);
+        $records = grooflow_buk_extract_records($json);
+        $count = count($records);
+        if (is_array($json) && isset($json['pagination']['total'])) {
+            $count = max($count, (int) $json['pagination']['total']);
+        }
+        $duration = (int) round(microtime(true) * 1000) - $started;
+        $ok = $res['status'] >= 200 && $res['status'] < 300;
+        $snippet = substr(preg_replace('/\s+/', ' ', $res['body']) ?? '', 0, 300);
+
+        return [
+            'ok' => $ok,
+            'status' => $res['status'],
+            'message' => $ok
+                ? ($count > 0 ? ('OK. ' . $count . ' registro(s) detectados.') : 'OK. Respuesta sin arreglo de registros (revisa campos en el explorador).')
+                : ('HTTP ' . $res['status'] . ': ' . ($snippet !== '' ? $snippet : 'sin detalle')),
+            'data' => $records,
+            'sample' => array_slice($records, 0, 3),
+            'recordCount' => $count,
+            'pagination' => is_array($json) && is_array($json['pagination'] ?? null) ? $json['pagination'] : null,
+            'rawPreview' => is_array($json) ? array_slice($json, 0, 20, true) : null,
+            'triedUrl' => $targetUrl,
+            'durationMs' => $duration,
+        ];
+    }
+
+    throw new InvalidArgumentException('Acción Buk.pe no soportada.');
+}

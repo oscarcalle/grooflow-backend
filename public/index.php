@@ -279,6 +279,13 @@ function grooflow_dispatch(PDO $pdo): void
         return;
     }
 
+    if (preg_match('#^/proxy/buk-pe/(test|probe)$#', $path, $m) && $method === 'POST') {
+        grooflow_assert_admin($pdo);
+        api_json_response(['ok' => true, ...grooflow_handle_buk_pe($pdo, $m[1], api_request_json())]);
+
+        return;
+    }
+
     if ($path === '/menu/tree' && $method === 'GET') {
         grooflow_assert_admin($pdo);
         api_json_response(['ok' => true, 'items' => grooflow_menu_list_tree($pdo), ...grooflow_menu_tree($pdo)]);
