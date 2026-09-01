@@ -89,6 +89,7 @@ function grooflow_menu_default_icon_color(string $moduloKey): string
         'Turnos' => 'text-violet-400 group-hover/btn:text-violet-300',
         'Accidentes de Trabajo' => 'text-rose-400 group-hover/btn:text-rose-300',
         'Entrega de Uniformes' => 'text-indigo-400 group-hover/btn:text-indigo-300',
+        'Recursos Humanos' => 'text-blue-400 group-hover/btn:text-blue-300',
         'Productos' => 'text-fuchsia-400 group-hover/btn:text-fuchsia-300',
         'Compras' => 'text-purple-400 group-hover/btn:text-purple-300',
         'Auditoría' => 'text-orange-400 group-hover/btn:text-orange-300',
@@ -126,6 +127,7 @@ function grooflow_menu_default_leaves(): array
         ['section' => 'Gestión', 'label' => 'Turnos', 'ruta' => '/turnos', 'modulo_key' => 'Turnos', 'icono' => 'fa-calendar-days'],
         ['section' => 'Gestión', 'label' => 'Accidentes de Trabajo', 'ruta' => '/accidentes-trabajo', 'modulo_key' => 'Accidentes de Trabajo', 'icono' => 'fa-hard-hat'],
         ['section' => 'Gestión', 'label' => 'Entrega de Uniformes', 'ruta' => '/entrega-uniformes', 'modulo_key' => 'Entrega de Uniformes', 'icono' => 'fa-shirt'],
+        ['section' => 'Recursos Humanos', 'label' => 'Colaboradores', 'ruta' => '/recursos-humanos', 'modulo_key' => 'Recursos Humanos', 'icono' => 'fa-users'],
         ['section' => 'Gestión', 'label' => 'Conciliación', 'ruta' => '/conciliacion', 'modulo_key' => 'Conciliación', 'icono' => 'fa-scale-balanced'],
         ['section' => 'Administración', 'label' => 'Configuración', 'ruta' => '/configuracion', 'modulo_key' => 'Configuración', 'icono' => 'fa-sliders'],
         ['section' => 'Administración', 'label' => 'Configuración de menú', 'ruta' => '/config/menu', 'modulo_key' => 'Admin Menú GrooFlow', 'icono' => 'fa-list-tree'],
@@ -145,7 +147,7 @@ function grooflow_menu_sync_catalog(PDO $pdo): void
 
     $parents = [];
     $orderSection = 10;
-    foreach (['Principal', 'Finanzas', 'Gestión', 'Administración'] as $section) {
+    foreach (['Principal', 'Finanzas', 'Gestión', 'Recursos Humanos', 'Administración'] as $section) {
         $stmt = $pdo->prepare('
             SELECT id FROM grooflow_menu_opciones
             WHERE es_padre = 1 AND texto = ?

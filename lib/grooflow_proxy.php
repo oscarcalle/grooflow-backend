@@ -566,11 +566,51 @@ function grooflow_buk_pe_auth_headers(string $apiToken): array
     ];
 }
 
+/** @return array{records: list<array<string, mixed>>, totalPages: int, count: int} */
+function grooflow_parse_buk_pe_page(mixed $json): array
+{
+    if (! is_array($json)) {
+        return ['records' => [], 'totalPages' => 1, 'count' => 0];
+    }
+    $records = grooflow_buk_extract_records($json);
+    $pagination = is_array($json['pagination'] ?? null) ? $json['pagination'] : [];
+    $totalPages = max(1, (int) ($pagination['total_pages'] ?? $pagination['totalPages'] ?? 1));
+    $count = (int) ($pagination['count'] ?? count($records));
+
+    return ['records' => $records, 'totalPages' => $totalPages, 'count' => $count];
+}
+
+/** @return array{status: int, records: list<array<string, mixed>>, totalPages: int, count: int, triedUrl: string} */
+function grooflow_buk_pe_fetch_page(
+    string $baseUrl,
+    string $apiToken,
+    int $page,
+    int $pageSize,
+    int $timeoutSec = 60
+): array {
+    $url = grooflow_build_buk_pe_target_url($baseUrl, '', 'employees?page=' . max(1, $page) . '&page_size=' . max(1, min(200, $pageSize)));
+    grooflow_assert_buk_pe_url($url);
+    $res = grooflow_proxy_fetch($url, grooflow_buk_pe_auth_headers($apiToken), $timeoutSec);
+    $json = json_decode($res['body'], true);
+    $parsed = grooflow_parse_buk_pe_page($json);
+
+    return [
+        'status' => $res['status'],
+        'records' => $parsed['records'],
+        'totalPages' => $parsed['totalPages'],
+        'count' => $parsed['count'],
+        'triedUrl' => $url,
+    ];
+}
+
 /** @param array<string, mixed> $data */
 function grooflow_handle_buk_pe(PDO $pdo, string $action, array $data): array
 {
     $baseUrl = grooflow_sanitize_buk_pe_base_url((string) ($data['baseUrl'] ?? $data['url'] ?? ''));
     $apiToken = grooflow_resolve_buk_pe_api_token($pdo, (string) ($data['apiToken'] ?? $data['token'] ?? ''));
+    $page = max(1, (int) ($data['page'] ?? 1));
+    $pageSize = max(1, min(200, (int) ($data['pageSize'] ?? $data['perPage'] ?? 100)));
+    $maxPages = max(1, min(50, (int) ($data['maxPages'] ?? 30)));
     $started = (int) round(microtime(true) * 1000);
 
     if ($action === 'test') {
@@ -627,6 +667,67 @@ function grooflow_handle_buk_pe(PDO $pdo, string $action, array $data): array
             'pagination' => is_array($json) && is_array($json['pagination'] ?? null) ? $json['pagination'] : null,
             'rawPreview' => is_array($json) ? array_slice($json, 0, 20, true) : null,
             'triedUrl' => $targetUrl,
+            'durationMs' => $duration,
+        ];
+    }
+
+    if ($action === 'fetch') {
+        $pageRes = grooflow_buk_pe_fetch_page($baseUrl, $apiToken, $page, $pageSize, 60);
+        $duration = (int) round(microtime(true) * 1000) - $started;
+        if ($pageRes['status'] < 200 || $pageRes['status'] >= 300) {
+            return [
+                'ok' => false,
+                'status' => $pageRes['status'],
+                'message' => grooflow_buk_pe_failure_message($pageRes['status'], $pageRes['triedUrl'], ''),
+                'data' => [],
+                'totalPages' => 1,
+                'triedUrl' => $pageRes['triedUrl'],
+                'durationMs' => $duration,
+            ];
+        }
+
+        return [
+            'ok' => true,
+            'status' => $pageRes['status'],
+            'data' => $pageRes['records'],
+            'totalPages' => $pageRes['totalPages'],
+            'triedUrl' => $pageRes['triedUrl'],
+            'durationMs' => $duration,
+        ];
+    }
+
+    if ($action === 'fetch-all') {
+        $all = [];
+        $first = grooflow_buk_pe_fetch_page($baseUrl, $apiToken, 1, $pageSize, 120);
+        if ($first['status'] < 200 || $first['status'] >= 300) {
+            $duration = (int) round(microtime(true) * 1000) - $started;
+
+            return [
+                'ok' => false,
+                'status' => $first['status'],
+                'message' => grooflow_buk_pe_failure_message($first['status'], $first['triedUrl'], ''),
+                'data' => [],
+                'triedUrl' => $first['triedUrl'],
+                'durationMs' => $duration,
+            ];
+        }
+        $all = array_merge($all, $first['records']);
+        $totalPages = min($first['totalPages'], $maxPages);
+        for ($p = 2; $p <= $totalPages; $p++) {
+            $next = grooflow_buk_pe_fetch_page($baseUrl, $apiToken, $p, $pageSize, 120);
+            if ($next['status'] < 200 || $next['status'] >= 300) {
+                break;
+            }
+            $all = array_merge($all, $next['records']);
+        }
+        $duration = (int) round(microtime(true) * 1000) - $started;
+
+        return [
+            'ok' => true,
+            'status' => 200,
+            'data' => $all,
+            'recordCount' => count($all),
+            'totalPages' => $totalPages,
             'durationMs' => $duration,
         ];
     }
