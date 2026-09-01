@@ -125,6 +125,33 @@ function grooflow_normalize_buk_token(string $apiToken): string
     return $apiToken;
 }
 
+function grooflow_normalize_buk_pe_token(string $apiToken): string
+{
+    $apiToken = grooflow_normalize_buk_token($apiToken);
+    $apiToken = preg_replace('/^auth_token\s*:\s*/i', '', $apiToken) ?? $apiToken;
+    if (
+        (str_starts_with($apiToken, '"') && str_ends_with($apiToken, '"')) ||
+        (str_starts_with($apiToken, "'") && str_ends_with($apiToken, "'"))
+    ) {
+        $apiToken = trim(substr($apiToken, 1, -1));
+    }
+
+    return trim($apiToken);
+}
+
+function grooflow_buk_pe_failure_message(int $status, string $targetUrl, string $body): string
+{
+    if ($status === 401) {
+        return 'HTTP 401 — auth_token inválido o no guardado. Pega solo el valor del token (sin "auth_token:"), guarda y vuelve a probar. URL: ' . $targetUrl;
+    }
+    if ($status === 403) {
+        return 'HTTP 403 — sin permiso para este recurso en Buk.pe. URL: ' . $targetUrl;
+    }
+    $snippet = substr(preg_replace('/\s+/', ' ', $body) ?? '', 0, 200);
+
+    return 'HTTP ' . $status . ' — URL: ' . $targetUrl . ($snippet !== '' ? (' — ' . $snippet) : '');
+}
+
 function grooflow_buk_token_is_redacted(string $apiToken): bool
 {
     $t = trim($apiToken);
@@ -508,7 +535,7 @@ function grooflow_build_buk_pe_target_url(string $baseUrl, string $targetUrl, st
 
 function grooflow_resolve_buk_pe_api_token(PDO $pdo, string $apiToken): string
 {
-    $apiToken = grooflow_normalize_buk_token($apiToken);
+    $apiToken = grooflow_normalize_buk_pe_token($apiToken);
     if (! grooflow_buk_token_is_redacted($apiToken)) {
         return $apiToken;
     }
@@ -517,7 +544,7 @@ function grooflow_resolve_buk_pe_api_token(PDO $pdo, string $apiToken): string
         throw new InvalidArgumentException('Configura Buk.pe en Integraciones antes de consultar.');
     }
     $bukPe = is_array($raw['bukPe'] ?? null) ? $raw['bukPe'] : [];
-    $stored = grooflow_normalize_buk_token((string) ($bukPe['apiToken'] ?? ''));
+    $stored = grooflow_normalize_buk_pe_token((string) ($bukPe['apiToken'] ?? ''));
     if ($stored === '' || grooflow_buk_token_is_redacted($stored)) {
         throw new InvalidArgumentException('Token Buk.pe no disponible. Un administrador debe guardarlo en Integraciones.');
     }
@@ -559,7 +586,7 @@ function grooflow_handle_buk_pe(PDO $pdo, string $action, array $data): array
             'status' => $res['status'],
             'message' => $res['status'] >= 200 && $res['status'] < 300
                 ? ('Conexión OK. ' . $count . ' empleado(s) detectados.')
-                : ('HTTP ' . $res['status'] . ' — URL: ' . $testUrl),
+                : grooflow_buk_pe_failure_message($res['status'], $testUrl, $res['body']),
             'recordHint' => $count ? ($count . ' registros') : null,
             'triedUrl' => $testUrl,
             'durationMs' => $duration,
@@ -582,14 +609,13 @@ function grooflow_handle_buk_pe(PDO $pdo, string $action, array $data): array
         }
         $duration = (int) round(microtime(true) * 1000) - $started;
         $ok = $res['status'] >= 200 && $res['status'] < 300;
-        $snippet = substr(preg_replace('/\s+/', ' ', $res['body']) ?? '', 0, 300);
 
         return [
             'ok' => $ok,
             'status' => $res['status'],
             'message' => $ok
                 ? ($count > 0 ? ('OK. ' . $count . ' registro(s) detectados.') : 'OK. Respuesta sin arreglo de registros (revisa campos en el explorador).')
-                : ('HTTP ' . $res['status'] . ': ' . ($snippet !== '' ? $snippet : 'sin detalle')),
+                : grooflow_buk_pe_failure_message($res['status'], $targetUrl, $res['body']),
             'data' => $records,
             'sample' => array_slice($records, 0, 3),
             'recordCount' => $count,
