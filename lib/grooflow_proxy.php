@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/grooflow_asistencia.php';
+
 function grooflow_proxy_fetch(string $url, array $headers, int $timeoutSec = 45): array
 {
     $ch = curl_init($url);
@@ -99,7 +101,7 @@ function grooflow_assert_buk_url(string $url): void
 function grooflow_count_hint(mixed $json): ?string
 {
     if (is_array($json)) {
-        if (is_array($json) && array_keys($json) === range(0, count($json) - 1)) {
+        if (array_keys($json) === range(0, count($json) - 1)) {
             return count($json) . ' registro(s) en esta página';
         }
         if (isset($json['data']) && is_array($json['data'])) {
@@ -111,6 +113,127 @@ function grooflow_count_hint(mixed $json): ?string
     }
 
     return null;
+}
+
+function grooflow_normalize_buk_token(string $apiToken): string
+{
+    $apiToken = trim($apiToken);
+    if (str_starts_with(strtolower($apiToken), 'bearer ')) {
+        $apiToken = trim(substr($apiToken, 7));
+    }
+
+    return $apiToken;
+}
+
+function grooflow_buk_token_is_redacted(string $apiToken): bool
+{
+    $t = trim($apiToken);
+    if ($t === '') {
+        return true;
+    }
+    if ($t === '********') {
+        return true;
+    }
+
+    return preg_match('/^\*+$/', $t) === 1;
+}
+
+/** Usa token almacenado en servidor si el cliente envía valor redactado. */
+function grooflow_resolve_buk_api_token(PDO $pdo, string $apiToken): string
+{
+    $apiToken = grooflow_normalize_buk_token($apiToken);
+    if (! grooflow_buk_token_is_redacted($apiToken)) {
+        return $apiToken;
+    }
+    $settings = grooflow_asistencia_get_settings($pdo);
+    if (! is_array($settings)) {
+        throw new InvalidArgumentException('Configura Buk Asistencia en Integraciones antes de actualizar.');
+    }
+    $stored = grooflow_normalize_buk_token((string) ($settings['buk']['apiToken'] ?? ''));
+    if ($stored === '' || grooflow_buk_token_is_redacted($stored)) {
+        throw new InvalidArgumentException('Token Buk no disponible. Un administrador debe probar la conexión en Integraciones.');
+    }
+
+    return $stored;
+}
+
+function grooflow_sanitize_buk_base_url(string $raw): string
+{
+    $s = trim($raw);
+    if ($s === '') {
+        return 'https://app.ctrlit.cl/ctrl/api/v2';
+    }
+    $s = preg_split('/[#?]/', $s)[0] ?? $s;
+    $s = rtrim($s, '/');
+    $s = preg_replace('#/asistencia-empresa/?$#i', '', $s);
+    $s = rtrim($s, '/');
+    if (! str_starts_with(strtolower($s), 'http')) {
+        $s = 'https://' . $s;
+    }
+    $parts = parse_url($s);
+    if (! is_array($parts)) {
+        return 'https://app.ctrlit.cl/ctrl/api/v2';
+    }
+    $host = strtolower((string) ($parts['host'] ?? ''));
+    $path = rtrim((string) ($parts['path'] ?? ''), '/');
+    if ($host === 'app.ctrlit.cl' || str_ends_with($host, '.ctrlit.cl')) {
+        if ($path === '' || $path === '/ctrl' || $path === '/ctrl/api' || ! str_contains($path, '/api/v2')) {
+            return 'https://app.ctrlit.cl/ctrl/api/v2';
+        }
+    }
+
+    return rtrim(((string) ($parts['scheme'] ?? 'https')) . '://' . $host . $path, '/');
+}
+
+function grooflow_build_buk_asistencia_url(string $baseUrl, int $page, int $pageSize): string
+{
+    $base = grooflow_sanitize_buk_base_url($baseUrl);
+    $url = $base . '/asistencia-empresa?page=' . max(1, $page) . '&page_size=' . max(1, min(200, $pageSize));
+
+    return $url;
+}
+
+/** @return array{records: list<array<string, mixed>>, totalPages: int, count: int} */
+function grooflow_parse_buk_asistencia_page(mixed $json): array
+{
+    if (! is_array($json)) {
+        return ['records' => [], 'totalPages' => 1, 'count' => 0];
+    }
+    $records = [];
+    if (isset($json['data']) && is_array($json['data'])) {
+        $records = $json['data'];
+    }
+    $pagination = is_array($json['pagination'] ?? null) ? $json['pagination'] : [];
+    $totalPages = max(1, (int) ($pagination['totalPages'] ?? 1));
+    $count = (int) ($pagination['count'] ?? count($records));
+
+    return ['records' => $records, 'totalPages' => $totalPages, 'count' => $count];
+}
+
+/** @return array{status: int, records: list<array<string, mixed>>, totalPages: int, count: int, triedUrl: string} */
+function grooflow_buk_fetch_page(
+    string $baseUrl,
+    string $apiToken,
+    int $page,
+    int $pageSize,
+    int $timeoutSec = 45
+): array {
+    $url = grooflow_build_buk_asistencia_url($baseUrl, $page, $pageSize);
+    grooflow_assert_buk_url($url);
+    $res = grooflow_proxy_fetch($url, [
+        'token: ' . $apiToken,
+        'Accept: application/json',
+    ], $timeoutSec);
+    $json = json_decode($res['body'], true);
+    $parsed = grooflow_parse_buk_asistencia_page($json);
+
+    return [
+        'status' => $res['status'],
+        'records' => $parsed['records'],
+        'totalPages' => $parsed['totalPages'],
+        'count' => $parsed['count'],
+        'triedUrl' => $url,
+    ];
 }
 
 function grooflow_handle_veterinari_test(array $data): array
@@ -147,53 +270,97 @@ function grooflow_handle_veterinari_test(array $data): array
     ];
 }
 
-function grooflow_handle_buk(string $action, array $data): array
+function grooflow_handle_buk(PDO $pdo, string $action, array $data): array
 {
-    $baseUrl = rtrim(trim((string) ($data['baseUrl'] ?? $data['url'] ?? '')), '/');
-    $apiToken = trim((string) ($data['apiToken'] ?? $data['token'] ?? ''));
-    if (str_starts_with(strtolower($apiToken), 'bearer ')) {
-        $apiToken = trim(substr($apiToken, 7));
-    }
-    if ($apiToken === '') {
-        throw new InvalidArgumentException('Indica el token de la API.');
-    }
-    if ($baseUrl === '') {
-        $baseUrl = 'https://app.ctrlit.cl/ctrl/api/v2';
-    }
+    $baseUrl = grooflow_sanitize_buk_base_url((string) ($data['baseUrl'] ?? $data['url'] ?? ''));
+    $apiToken = grooflow_resolve_buk_api_token($pdo, (string) ($data['apiToken'] ?? $data['token'] ?? ''));
     $page = max(1, (int) ($data['page'] ?? 1));
-    $perPage = max(1, min(200, (int) ($data['perPage'] ?? $data['pageSize'] ?? 100)));
-    $url = $baseUrl . '/asistencia-empresa?page=' . $page . '&per_page=' . $perPage;
-    grooflow_assert_buk_url($url);
+    $pageSize = max(1, min(200, (int) ($data['pageSize'] ?? $data['perPage'] ?? 100)));
+    $maxPages = max(1, min(50, (int) ($data['maxPages'] ?? 15)));
     $started = (int) round(microtime(true) * 1000);
-    $res = grooflow_proxy_fetch($url, [
-        'token: ' . $apiToken,
-        'Accept: application/json',
-    ], $action === 'fetch-all' ? 120 : 45);
-    $json = json_decode($res['body'], true);
-    $duration = (int) round(microtime(true) * 1000) - $started;
+
     if ($action === 'test') {
-        $count = 0;
-        if (is_array($json)) {
-            $count = (int) ($json['pagination']['count'] ?? (isset($json['data']) && is_array($json['data']) ? count($json['data']) : 0));
-        }
+        $targetUrl = trim((string) ($data['targetUrl'] ?? ''));
+        $testUrl = $targetUrl !== '' ? $targetUrl : grooflow_build_buk_asistencia_url($baseUrl, 1, 5);
+        grooflow_assert_buk_url($testUrl);
+        $res = grooflow_proxy_fetch($testUrl, [
+            'token: ' . $apiToken,
+            'Accept: application/json',
+        ], 45);
+        $json = json_decode($res['body'], true);
+        $parsed = grooflow_parse_buk_asistencia_page($json);
+        $count = $parsed['count'] > 0 ? $parsed['count'] : count($parsed['records']);
+        $duration = (int) round(microtime(true) * 1000) - $started;
 
         return [
             'ok' => $res['status'] >= 200 && $res['status'] < 300,
             'status' => $res['status'],
             'message' => $res['status'] >= 200 && $res['status'] < 300
                 ? ('Conexión OK. ' . $count . ' registro(s) en asistencia.')
-                : ('HTTP ' . $res['status'] . ' — URL: ' . $url),
+                : ('HTTP ' . $res['status'] . ' — URL: ' . $testUrl),
             'recordHint' => $count ? ($count . ' registros') : null,
-            'triedUrl' => $url,
+            'triedUrl' => $testUrl,
             'durationMs' => $duration,
         ];
     }
 
+    if ($action === 'fetch') {
+        $pageRes = grooflow_buk_fetch_page($baseUrl, $apiToken, $page, $pageSize, 45);
+        $duration = (int) round(microtime(true) * 1000) - $started;
+        if ($pageRes['status'] < 200 || $pageRes['status'] >= 300) {
+            return [
+                'ok' => false,
+                'status' => $pageRes['status'],
+                'message' => 'HTTP ' . $pageRes['status'] . ' — URL: ' . $pageRes['triedUrl'],
+                'data' => [],
+                'totalPages' => 1,
+                'triedUrl' => $pageRes['triedUrl'],
+                'durationMs' => $duration,
+            ];
+        }
+
+        return [
+            'ok' => true,
+            'status' => $pageRes['status'],
+            'data' => $pageRes['records'],
+            'totalPages' => $pageRes['totalPages'],
+            'triedUrl' => $pageRes['triedUrl'],
+            'durationMs' => $duration,
+        ];
+    }
+
+    // fetch-all: paginar hasta maxPages
+    $all = [];
+    $first = grooflow_buk_fetch_page($baseUrl, $apiToken, 1, $pageSize, 120);
+    if ($first['status'] < 200 || $first['status'] >= 300) {
+        $duration = (int) round(microtime(true) * 1000) - $started;
+
+        return [
+            'ok' => false,
+            'status' => $first['status'],
+            'message' => 'HTTP ' . $first['status'] . ' — URL: ' . $first['triedUrl'],
+            'data' => [],
+            'triedUrl' => $first['triedUrl'],
+            'durationMs' => $duration,
+        ];
+    }
+    $all = array_merge($all, $first['records']);
+    $totalPages = min($first['totalPages'], $maxPages);
+    for ($p = 2; $p <= $totalPages; $p++) {
+        $next = grooflow_buk_fetch_page($baseUrl, $apiToken, $p, $pageSize, 120);
+        if ($next['status'] < 200 || $next['status'] >= 300) {
+            break;
+        }
+        $all = array_merge($all, $next['records']);
+    }
+    $duration = (int) round(microtime(true) * 1000) - $started;
+
     return [
-        'ok' => $res['status'] >= 200 && $res['status'] < 300,
-        'status' => $res['status'],
-        'data' => is_array($json) ? $json : ['raw' => $res['body']],
-        'triedUrl' => $url,
+        'ok' => true,
+        'status' => $first['status'],
+        'data' => $all,
+        'totalPages' => $totalPages,
+        'triedUrl' => $first['triedUrl'],
         'durationMs' => $duration,
     ];
 }

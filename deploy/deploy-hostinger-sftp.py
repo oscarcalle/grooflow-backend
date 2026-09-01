@@ -12,6 +12,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE = BACKEND_ROOT.parent
 ENV_FILE = BACKEND_ROOT / "deploy" / "env.ssh"
 FRONTEND_DIST = WORKSPACE / "GrooFlow" / "dist"
+API_GATEWAY = BACKEND_ROOT / "deploy" / "hostinger-grooflow-api"
 
 BACKEND_EXCLUDE = {
     ".git",
@@ -69,19 +70,57 @@ def upload_file(sftp: paramiko.SFTPClient, local: Path, remote: str) -> None:
     sftp.put(str(local), remote)
 
 
+def normalize_html(text: str) -> str:
+    return text.replace("\r\n", "\n").strip()
+
+
 def remote_text(sftp: paramiko.SFTPClient, remote: str) -> str:
     with sftp.open(remote) as handle:
         return handle.read().decode("utf-8", errors="replace")
 
 
+def prune_remote_assets(sftp: paramiko.SFTPClient, local_dist: Path, remote_frontend: str) -> int:
+    """Elimina assets en el servidor que ya no están en el build local."""
+    local_assets = local_dist / "assets"
+    if not local_assets.is_dir():
+        return 0
+    keep = {f"assets/{p.name}" for p in local_assets.iterdir() if p.is_file()}
+    remote_assets = f"{remote_frontend}/assets"
+    removed = 0
+    try:
+        for entry in sftp.listdir_attr(remote_assets):
+            rel = f"assets/{entry.filename}"
+            if rel in keep:
+                continue
+            sftp.remove(f"{remote_assets}/{entry.filename}")
+            removed += 1
+            print(f"    eliminado asset obsoleto: {entry.filename}")
+    except OSError as exc:
+        print(f"    aviso prune assets: {exc}", file=sys.stderr)
+    return removed
+
+
 def verify_index_html(sftp: paramiko.SFTPClient, local: Path, remote: str) -> bool:
     upload_file(sftp, local, remote)
-    remote_index = remote_text(sftp, remote)
-    local_index = local.read_text(encoding="utf-8")
-    if remote_index.strip() == local_index.strip():
+    remote_index = normalize_html(remote_text(sftp, remote))
+    local_index = normalize_html(local.read_text(encoding="utf-8"))
+    if remote_index == local_index:
         return True
     upload_file(sftp, local, remote)
-    return remote_text(sftp, remote).strip() == local_index.strip()
+    return normalize_html(remote_text(sftp, remote)) == local_index
+
+
+def upload_api_gateway(sftp: paramiko.SFTPClient, remote_frontend: str) -> None:
+    remote_api = f"{remote_frontend}/api"
+    try:
+        sftp.stat(remote_api)
+    except OSError:
+        sftp.mkdir(remote_api)
+    for name in (".htaccess", "index.php"):
+        local = API_GATEWAY / name
+        if local.exists():
+            sftp.put(str(local), f"{remote_api}/{name}")
+            print(f"    api/{name}")
 
 
 def main() -> int:
@@ -122,6 +161,12 @@ def main() -> int:
 
         print(f"==> Subiendo frontend -> {remote_frontend}")
         print(f"    {upload_dir(sftp, FRONTEND_DIST, remote_frontend)} archivos")
+
+        print("==> Limpiando assets obsoletos en servidor")
+        print(f"    {prune_remote_assets(sftp, FRONTEND_DIST, remote_frontend)} eliminados")
+
+        print("==> Configurando gateway API /grooflow/api")
+        upload_api_gateway(sftp, remote_frontend)
 
         index_local = FRONTEND_DIST / "index.html"
         index_remote = f"{remote_frontend}/index.html"
