@@ -141,8 +141,13 @@ function grooflow_normalize_buk_pe_token(string $apiToken): string
 
 function grooflow_buk_pe_failure_message(int $status, string $targetUrl, string $body): string
 {
+    $trimmed = trim($body);
     if ($status === 401) {
-        return 'HTTP 401 — auth_token inválido o no guardado. Pega solo el valor del token (sin "auth_token:"), guarda y vuelve a probar. URL: ' . $targetUrl;
+        if ($trimmed === '"no_authorize"' || str_contains($trimmed, 'no_authorize')) {
+            return 'HTTP 401 — Buk.pe rechazó el auth_token ("no_authorize"). Genera un token nuevo en Buk.pe → Configuración → Accesos API y pégalo aquí (no uses IDs de usuario ni claves de otro módulo). URL: ' . $targetUrl;
+        }
+
+        return 'HTTP 401 — auth_token inválido. Verifica en Buk.pe → Configuración → Accesos API que el token sea el de API (no un UUID de otro servicio). URL: ' . $targetUrl;
     }
     if ($status === 403) {
         return 'HTTP 403 — sin permiso para este recurso en Buk.pe. URL: ' . $targetUrl;
