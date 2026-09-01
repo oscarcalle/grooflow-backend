@@ -299,7 +299,7 @@ function grooflow_usuarios_list(PDO $pdo): array
         SELECT u.id, u.username, u.nombre, u.apellido, u.email, u.nivel_id, n.nombre AS nivel_nombre
         FROM app_usuarios u
         LEFT JOIN app_niveles n ON n.id = u.nivel_id
-        WHERE u.is_deleted = 0
+        WHERE u.is_deleted = 0 AND u.estado = \'activo\'
         ORDER BY u.nombre ASC, u.apellido ASC, u.username ASC
     ')->fetchAll(PDO::FETCH_ASSOC) ?: [];
 

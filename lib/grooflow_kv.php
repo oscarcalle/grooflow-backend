@@ -6,6 +6,11 @@ function grooflow_kv_get(PDO $pdo, string $key): mixed
 {
     grooflow_ensure_schema($pdo);
     $key = grooflow_normalize_kv_key($key);
+    if ($key === 'data:sedes') {
+        require_once __DIR__ . '/grooflow_sedes.php';
+
+        return grooflow_list_sedes($pdo);
+    }
     if ($key === 'data:users') {
         return grooflow_list_users($pdo);
     }
@@ -40,9 +45,21 @@ function grooflow_kv_get(PDO $pdo, string $key): mixed
     $stmt->execute([$key]);
     $raw = $stmt->fetchColumn();
     if ($raw === false || $raw === null) {
+        if ($key === 'settings:system') {
+            require_once __DIR__ . '/grooflow_sedes.php';
+
+            return grooflow_merge_system_settings_sedes($pdo, null);
+        }
+
         return null;
     }
     $decoded = grooflow_json_decode(is_string($raw) ? $raw : (string) $raw);
+
+    if ($key === 'settings:system') {
+        require_once __DIR__ . '/grooflow_sedes.php';
+
+        return grooflow_merge_system_settings_sedes($pdo, is_array($decoded) ? $decoded : null);
+    }
 
     return $decoded;
 }
@@ -218,6 +235,7 @@ function grooflow_kv_bootstrap_keys(): array
         'data:requests',
         'data:pettyCash',
         'data:pettyCashMeta',
+        'data:sedes',
         'data:users',
         'data:roles',
         'data:feeReceipts',

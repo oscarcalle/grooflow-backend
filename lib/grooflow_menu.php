@@ -21,6 +21,7 @@ function grooflow_menu_ensure_schema(PDO $pdo): void
             id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
             texto VARCHAR(160) NOT NULL,
             icono VARCHAR(80) NULL,
+            icon_color VARCHAR(80) NULL,
             ruta VARCHAR(190) NOT NULL DEFAULT '',
             modulo_key VARCHAR(80) NOT NULL DEFAULT '',
             es_padre TINYINT(1) NOT NULL DEFAULT 0,
@@ -49,6 +50,55 @@ function grooflow_menu_ensure_schema(PDO $pdo): void
             KEY idx_gf_nivel_menu_menu (menu_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ");
+
+    grooflow_menu_ensure_icon_color_column($pdo);
+}
+
+function grooflow_menu_ensure_icon_color_column(PDO $pdo): void
+{
+    $stmt = $pdo->query("
+        SELECT COUNT(*) FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'grooflow_menu_opciones'
+          AND COLUMN_NAME = 'icon_color'
+    ");
+    if ((int) $stmt->fetchColumn() === 0) {
+        $pdo->exec('ALTER TABLE grooflow_menu_opciones ADD COLUMN icon_color VARCHAR(80) NULL AFTER icono');
+    }
+}
+
+/** Color Tailwind del icono en el menú lateral (por modulo_key). */
+function grooflow_menu_default_icon_color(string $moduloKey): string
+{
+    $map = [
+        'Dashboard' => 'text-sky-400 group-hover/btn:text-sky-300',
+        'Alertas' => 'text-rose-400 group-hover/btn:text-rose-300',
+        'Analítica' => 'text-violet-400 group-hover/btn:text-violet-300',
+        'Tesorería' => 'text-amber-400 group-hover/btn:text-amber-300',
+        'Transacciones' => 'text-emerald-400 group-hover/btn:text-emerald-300',
+        'Flujo de Caja' => 'text-cyan-400 group-hover/btn:text-cyan-300',
+        'Estado de Resultados' => 'text-pink-400 group-hover/btn:text-pink-300',
+        'Reportes' => 'text-amber-400 group-hover/btn:text-amber-300',
+        'Caja Chica' => 'text-teal-400 group-hover/btn:text-teal-300',
+        'Honorarios' => 'text-violet-400 group-hover/btn:text-violet-300',
+        'Proveedores' => 'text-indigo-400 group-hover/btn:text-indigo-300',
+        'Contabilidad' => 'text-sky-400 group-hover/btn:text-sky-300',
+        'Gestión Vehicular' => 'text-cyan-400 group-hover/btn:text-cyan-300',
+        'Gestión de Inventario' => 'text-sky-400 group-hover/btn:text-sky-300',
+        'Asistencia' => 'text-indigo-400 group-hover/btn:text-indigo-300',
+        'Turnos' => 'text-violet-400 group-hover/btn:text-violet-300',
+        'Accidentes de Trabajo' => 'text-rose-400 group-hover/btn:text-rose-300',
+        'Entrega de Uniformes' => 'text-indigo-400 group-hover/btn:text-indigo-300',
+        'Productos' => 'text-fuchsia-400 group-hover/btn:text-fuchsia-300',
+        'Compras' => 'text-purple-400 group-hover/btn:text-purple-300',
+        'Auditoría' => 'text-orange-400 group-hover/btn:text-orange-300',
+        'Conciliación' => 'text-emerald-400 group-hover/btn:text-emerald-300',
+        'Configuración' => 'text-slate-400 group-hover/btn:text-slate-300',
+        'Admin Menú GrooFlow' => 'text-cyan-400 group-hover/btn:text-cyan-300',
+        'Asignación Menú GrooFlow' => 'text-emerald-400 group-hover/btn:text-emerald-300',
+    ];
+
+    return $map[$moduloKey] ?? 'text-indigo-400 group-hover/btn:text-indigo-300';
 }
 
 /** @return list<array{section:string,label:string,ruta:string,modulo_key:string,icono:string}> */
@@ -111,7 +161,8 @@ function grooflow_menu_sync_catalog(PDO $pdo): void
             $ins->execute([$section, 'fa-folder', '', '', $orderSection]);
             $id = (int) $pdo->lastInsertId();
         } else {
-            $pdo->prepare('UPDATE grooflow_menu_opciones SET orden = ?, estado = \'activo\' WHERE id = ?')->execute([$orderSection, $id]);
+            // No resetear orden: el admin puede reordenar secciones desde /config/menu.
+            $pdo->prepare('UPDATE grooflow_menu_opciones SET estado = \'activo\' WHERE id = ?')->execute([$id]);
         }
         $parents[$section] = $id;
         $orderSection += 10;
@@ -124,12 +175,19 @@ function grooflow_menu_sync_catalog(PDO $pdo): void
         LIMIT 1
     ');
     $insertLeaf = $pdo->prepare('
-        INSERT INTO grooflow_menu_opciones (texto, icono, ruta, modulo_key, es_padre, padre_id, orden, estado)
-        VALUES (?, ?, ?, ?, 0, ?, ?, \'activo\')
+        INSERT INTO grooflow_menu_opciones (texto, icono, icon_color, ruta, modulo_key, es_padre, padre_id, orden, estado)
+        VALUES (?, ?, ?, ?, ?, 0, ?, ?, \'activo\')
     ');
+    // No pisar texto/icono/ruta/icon_color/padre_id/orden ya personalizados por el admin.
     $updateLeaf = $pdo->prepare('
         UPDATE grooflow_menu_opciones
-        SET texto = ?, icono = ?, ruta = ?, modulo_key = ?, padre_id = ?, orden = ?, estado = \'activo\', updated_at = NOW()
+        SET
+            texto = COALESCE(NULLIF(TRIM(texto), \'\'), ?),
+            icono = COALESCE(NULLIF(TRIM(icono), \'\'), ?),
+            icon_color = COALESCE(NULLIF(TRIM(icon_color), \'\'), ?),
+            ruta = CASE WHEN TRIM(ruta) = \'\' THEN ? ELSE ruta END,
+            modulo_key = CASE WHEN TRIM(modulo_key) = \'\' THEN ? ELSE modulo_key END,
+            estado = \'activo\'
         WHERE id = ?
     ');
 
@@ -144,16 +202,16 @@ function grooflow_menu_sync_catalog(PDO $pdo): void
             $updateLeaf->execute([
                 $leaf['label'],
                 $leaf['icono'],
+                grooflow_menu_default_icon_color($leaf['modulo_key']),
                 $leaf['ruta'],
                 $leaf['modulo_key'],
-                $padreId,
-                $orderLeaf,
                 $existingId,
             ]);
         } else {
             $insertLeaf->execute([
                 $leaf['label'],
                 $leaf['icono'],
+                grooflow_menu_default_icon_color($leaf['modulo_key']),
                 $leaf['ruta'],
                 $leaf['modulo_key'],
                 $padreId,
@@ -205,6 +263,7 @@ function grooflow_menu_public_row(array $row, ?string $padreTexto = null): array
         'texto' => (string) $row['texto'],
         'icono' => $iconoRaw,
         'icono_fa' => grooflow_menu_icon_normalize($iconoRaw),
+        'icon_color' => trim((string) ($row['icon_color'] ?? '')),
         'ruta' => $ruta,
         'modulo_key' => $moduloKey,
         'es_padre' => (int) ($row['es_padre'] ?? 0),
@@ -233,9 +292,11 @@ function grooflow_menu_icon_normalize(string $icono): string
 }
 
 /** @return list<array<string, mixed>> */
-function grooflow_menu_list_tree(PDO $pdo): array
+function grooflow_menu_list_tree(PDO $pdo, bool $syncCatalog = true): array
 {
-    grooflow_menu_sync_catalog($pdo);
+    if ($syncCatalog) {
+        grooflow_menu_sync_catalog($pdo);
+    }
     $rows = $pdo->query('
         SELECT m.*, p.texto AS padre_texto
         FROM grooflow_menu_opciones m
@@ -259,7 +320,7 @@ function grooflow_menu_list_all(PDO $pdo): array
 function grooflow_menu_tree(PDO $pdo): array
 {
     grooflow_menu_sync_catalog($pdo);
-    $items = grooflow_menu_list_all($pdo);
+    $items = grooflow_menu_list_tree($pdo, false);
     $parents = [];
     $childrenByParent = [];
     $orphans = [];
@@ -305,7 +366,7 @@ function grooflow_menu_tree(PDO $pdo): array
 /** @param array<string, mixed> $data */
 function grooflow_menu_create(PDO $pdo, array $data): array
 {
-    grooflow_menu_ensure_seed($pdo);
+    grooflow_menu_ensure_schema($pdo);
     $texto = trim((string) ($data['texto'] ?? ''));
     if ($texto === '') {
         throw new InvalidArgumentException('El texto es obligatorio');
@@ -321,13 +382,18 @@ function grooflow_menu_create(PDO $pdo, array $data): array
     if ($orden <= 0) {
         $orden = (int) $pdo->query('SELECT COALESCE(MAX(orden), 0) + 1 FROM grooflow_menu_opciones')->fetchColumn();
     }
+    $iconColor = trim((string) ($data['icon_color'] ?? ''));
+    if ($esPadre === 0 && $iconColor === '' && $moduloKey !== '') {
+        $iconColor = grooflow_menu_default_icon_color($moduloKey);
+    }
     $stmt = $pdo->prepare('
-        INSERT INTO grooflow_menu_opciones (texto, icono, ruta, modulo_key, es_padre, padre_id, orden, estado)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO grooflow_menu_opciones (texto, icono, icon_color, ruta, modulo_key, es_padre, padre_id, orden, estado)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ');
     $stmt->execute([
         $texto,
         trim((string) ($data['icono'] ?? 'fa-circle')),
+        $iconColor !== '' ? $iconColor : null,
         $ruta,
         $moduloKey !== '' ? $moduloKey : $texto,
         $esPadre,
@@ -358,6 +424,9 @@ function grooflow_menu_update(PDO $pdo, int $id, array $data): array
     }
     $texto = trim((string) ($data['texto'] ?? $current['texto']));
     $icono = trim((string) ($data['icono'] ?? $current['icono'] ?? 'fa-circle'));
+    $iconColor = array_key_exists('icon_color', $data)
+        ? trim((string) $data['icon_color'])
+        : trim((string) ($current['icon_color'] ?? ''));
     $ruta = array_key_exists('ruta', $data) ? trim((string) $data['ruta']) : (string) ($current['ruta'] ?? '');
     $moduloKey = trim((string) ($data['modulo_key'] ?? $current['modulo_key'] ?? ''));
     $estado = (string) ($data['estado'] ?? $current['estado'] ?? 'activo');
@@ -365,11 +434,12 @@ function grooflow_menu_update(PDO $pdo, int $id, array $data): array
     $orden = array_key_exists('orden', $data) ? (int) $data['orden'] : (int) ($current['orden'] ?? 0);
     $pdo->prepare('
         UPDATE grooflow_menu_opciones
-        SET texto = ?, icono = ?, ruta = ?, modulo_key = ?, padre_id = ?, orden = ?, estado = ?, updated_at = NOW()
+        SET texto = ?, icono = ?, icon_color = ?, ruta = ?, modulo_key = ?, padre_id = ?, orden = ?, estado = ?, updated_at = NOW()
         WHERE id = ?
     ')->execute([
         $texto,
         $icono,
+        $iconColor !== '' ? $iconColor : null,
         $ruta,
         $moduloKey !== '' ? $moduloKey : $texto,
         $padreId > 0 ? $padreId : null,
@@ -693,6 +763,7 @@ function grooflow_menu_nav_sections_for_user(PDO $pdo, int $nivelId): array
                 'route' => (string) $child['ruta'],
                 'modulo_key' => (string) ($child['modulo_key'] ?? ''),
                 'icono' => (string) ($child['icono'] ?? ''),
+                'icon_color' => (string) ($child['icon_color'] ?? ''),
             ];
         }
         if ($items === []) {
@@ -717,6 +788,7 @@ function grooflow_menu_nav_sections_for_user(PDO $pdo, int $nivelId): array
                 'route' => (string) $child['ruta'],
                 'modulo_key' => (string) ($child['modulo_key'] ?? ''),
                 'icono' => (string) ($child['icono'] ?? ''),
+                'icon_color' => (string) ($child['icon_color'] ?? ''),
             ];
         }
         if ($orphanItems !== []) {

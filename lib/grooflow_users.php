@@ -104,13 +104,22 @@ function grooflow_sede_names(PDO $pdo, int $userId, int $nivelId, ?array $overla
     if ($overlayAllSedes === true) {
         return [];
     }
+    require_once __DIR__ . '/grooflow_sedes.php';
     if (is_array($overlaySedes) && $overlaySedes !== []) {
-        return array_values(array_map('strval', $overlaySedes));
+        $names = [];
+        foreach ($overlaySedes as $sede) {
+            $canonical = grooflow_resolve_sede_canonical($pdo, (string) $sede);
+            if ($canonical !== '') {
+                $names[] = $canonical;
+            }
+        }
+
+        return array_values(array_unique($names));
     }
     $sedes = auth_user_sedes($pdo, $userId);
     $names = [];
     foreach ($sedes as $sede) {
-        $nombre = trim((string) ($sede['nombre'] ?? ''));
+        $nombre = grooflow_resolve_sede_canonical($pdo, (string) ($sede['nombre'] ?? ''));
         if ($nombre !== '') {
             $names[] = $nombre;
         }
@@ -160,11 +169,26 @@ function grooflow_list_users(PDO $pdo): array
 }
 
 /** @param array<string, mixed> $row */
+function grooflow_user_gestion_avatar_url(array $row): string
+{
+    $raw = trim((string) ($row['imagen'] ?? ''));
+    if ($raw === '') {
+        return '';
+    }
+    if (! function_exists('uploads_public_path')) {
+        require_once (defined('CRON_ROOT') ? CRON_ROOT : dirname(__DIR__, 2)) . '/backend/lib/uploads_api.php';
+    }
+
+    return uploads_public_path($raw);
+}
+
+/** @param array<string, mixed> $row */
 function grooflow_user_to_app(PDO $pdo, array $row): array
 {
     $id = (int) $row['id'];
     $perfil = grooflow_load_perfil($pdo, $id);
     $nivelId = (int) ($row['nivel_id'] ?? 0);
+    $nivelNombre = trim((string) ($row['nivel_nombre'] ?? ''));
     $role = (string) ($perfil['role_id'] ?? '');
     if ($role === '') {
         $role = grooflow_default_role_for_nivel($nivelId);
@@ -182,14 +206,22 @@ function grooflow_user_to_app(PDO $pdo, array $row): array
     $extra = isset($perfil['extra_json']) ? grooflow_json_decode((string) $perfil['extra_json']) : [];
     $extra = is_array($extra) ? $extra : [];
 
+    $sedes = grooflow_sede_names($pdo, $id, $nivelId, $overlaySedes, $overlayAll);
+    $rawLocation = trim((string) ($perfil['location'] ?? ($extra['location'] ?? '')));
+    $location = $rawLocation !== ''
+        ? grooflow_resolve_sede_canonical($pdo, $rawLocation)
+        : ($sedes[0] ?? null);
+
     $user = [
         'id' => (string) $id,
         'name' => $name,
-        'initials' => (string) ($perfil['initials'] ?? '') ?: grooflow_initials($name, $username),
+        'initials' => grooflow_initials($name, $username),
         'role' => $role,
+        'nivelNombre' => $nivelNombre,
+        'roleLabel' => $nivelNombre !== '' ? $nivelNombre : $role,
         'email' => $email !== '' ? $email : $username,
-        'location' => $perfil['location'] ?? ($extra['location'] ?? null),
-        'sedes' => grooflow_sede_names($pdo, $id, $nivelId, $overlaySedes, $overlayAll),
+        'location' => $location,
+        'sedes' => $sedes,
         'allSedes' => grooflow_all_sedes_flag($pdo, $id, $nivelId, $overlaySedes, $overlayAll),
         'status' => ((string) ($row['estado'] ?? 'activo')) === 'activo' ? 'active' : 'inactive',
         'lastLogin' => ! empty($row['ultima_sesion'])
@@ -213,10 +245,9 @@ function grooflow_user_to_app(PDO $pdo, array $row): array
     if (! empty($perfil['petty_cash_opening_carry_consumed_at'])) {
         $user['pettyCashOpeningCarryConsumedAt'] = (string) $perfil['petty_cash_opening_carry_consumed_at'];
     }
-    if (! empty($perfil['avatar_url'])) {
-        $user['avatarUrl'] = (string) $perfil['avatar_url'];
-    } elseif (! empty($extra['avatarUrl'])) {
-        $user['avatarUrl'] = (string) $extra['avatarUrl'];
+    $gestionAvatar = grooflow_user_gestion_avatar_url($row);
+    if ($gestionAvatar !== '') {
+        $user['avatarUrl'] = $gestionAvatar;
     }
     $theme = $extra['theme'] ?? null;
     if ($theme === 'light' || $theme === 'dark') {
@@ -324,7 +355,7 @@ function grooflow_save_perfil(PDO $pdo, int $userId, array $user, string $role, 
     $sedes = isset($user['sedes']) && is_array($user['sedes']) ? array_values($user['sedes']) : null;
     $allSedes = array_key_exists('allSedes', $user) ? (! empty($user['allSedes']) ? 1 : 0) : null;
     $extra = $user;
-    unset($extra['id'], $extra['name'], $extra['email'], $extra['role'], $extra['status'], $extra['sedes'], $extra['allSedes']);
+    unset($extra['id'], $extra['name'], $extra['email'], $extra['role'], $extra['status'], $extra['sedes'], $extra['allSedes'], $extra['avatarUrl'], $extra['nivelNombre'], $extra['roleLabel'], $extra['initials']);
     if (! array_key_exists('theme', $extra) && isset($existingExtra['theme'])) {
         $extra['theme'] = $existingExtra['theme'];
     }
@@ -339,13 +370,12 @@ function grooflow_save_perfil(PDO $pdo, int $userId, array $user, string $role, 
             petty_cash_limit = ?,
             petty_cash_opening_carry_suggested = ?,
             petty_cash_opening_carry_consumed_at = ?,
-            avatar_url = ?,
             location = ?,
             extra_json = ?
         WHERE usuario_id = ?
     ')->execute([
         $role,
-        isset($user['initials']) ? (string) $user['initials'] : null,
+        grooflow_initials((string) ($user['name'] ?? ''), (string) ($user['email'] ?? '')),
         $sedes !== null ? grooflow_json_encode($sedes) : null,
         $allSedes,
         array_key_exists('pettyCashFundEnabled', $user) ? (! empty($user['pettyCashFundEnabled']) ? 1 : 0) : null,
@@ -356,7 +386,6 @@ function grooflow_save_perfil(PDO $pdo, int $userId, array $user, string $role, 
             ? (float) $user['pettyCashOpeningCarrySuggested']
             : null,
         isset($user['pettyCashOpeningCarryConsumedAt']) ? (string) $user['pettyCashOpeningCarryConsumedAt'] : null,
-        isset($user['avatarUrl']) ? (string) $user['avatarUrl'] : null,
         isset($user['location']) ? (string) $user['location'] : null,
         grooflow_json_encode($extra),
         $userId,
