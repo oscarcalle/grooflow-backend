@@ -149,6 +149,9 @@ function grooflow_ensure_schema(PDO $pdo): void
     require_once __DIR__ . '/grooflow_asistencia.php';
     grooflow_asistencia_ensure_schema($pdo);
 
+    require_once __DIR__ . '/grooflow_rrhh.php';
+    grooflow_rrhh_ensure_schema($pdo);
+
     grooflow_seed_roles($pdo);
     grooflow_asistencia_backfill_role_permissions($pdo);
 

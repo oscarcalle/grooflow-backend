@@ -20,6 +20,8 @@ require_once dirname(__DIR__) . '/lib/grooflow_proxy.php';
 require_once dirname(__DIR__) . '/lib/grooflow_audit.php';
 require_once dirname(__DIR__) . '/lib/grooflow_menu.php';
 require_once dirname(__DIR__) . '/lib/grooflow_usuario_menu.php';
+require_once dirname(__DIR__) . '/lib/grooflow_rrhh.php';
+require_once dirname(__DIR__) . '/lib/grooflow_lists.php';
 
 unset($_GET['token']);
 
@@ -270,9 +272,16 @@ function grooflow_dispatch(PDO $pdo): void
         return;
     }
 
-    if (preg_match('#^/proxy/buk/(test|fetch|fetch-all|probe)$#', $path, $m) && $method === 'POST') {
-        if ($m[1] === 'test' || $m[1] === 'probe') {
+    if (preg_match('#^/proxy/buk/(test|fetch|fetch-all|probe|sync-usuarios)$#', $path, $m) && $method === 'POST') {
+        if ($m[1] === 'test' || $m[1] === 'probe' || $m[1] === 'sync-usuarios') {
             grooflow_assert_admin($pdo);
+        }
+        if ($m[1] === 'sync-usuarios') {
+            require_once dirname(__DIR__) . '/lib/grooflow_buk_sync.php';
+            $result = grooflow_buk_sync_usuarios($pdo, api_request_json());
+            api_json_response(['ok' => true, ...$result]);
+
+            return;
         }
         api_json_response(['ok' => true, ...grooflow_handle_buk($pdo, $m[1], api_request_json())]);
 
@@ -505,6 +514,173 @@ function grooflow_dispatch(PDO $pdo): void
 
             return;
         }
+    }
+
+    // --- RRHH / catálogos ---
+    if ($path === '/rrhh/stats' && $method === 'GET') {
+        grooflow_rrhh_ensure_schema($pdo);
+        api_json_response(['ok' => true, 'stats' => grooflow_rrhh_stats($pdo)]);
+
+        return;
+    }
+
+    if ($path === '/rrhh/empleados' && $method === 'GET') {
+        api_json_response(['ok' => true, ...grooflow_rrhh_list_employees($pdo, $_GET)]);
+
+        return;
+    }
+
+    if ($path === '/rrhh/empleados/export' && $method === 'GET') {
+        grooflow_rrhh_export_excel($pdo, $_GET);
+
+        return;
+    }
+
+    if ($path === '/rrhh/sync' && $method === 'POST') {
+        grooflow_assert_admin($pdo);
+        $result = grooflow_rrhh_sync_from_apis($pdo, api_request_json());
+        api_json_response(['ok' => true, ...$result]);
+
+        return;
+    }
+
+    if ($path === '/rrhh/links' && $method === 'POST') {
+        grooflow_assert_admin($pdo);
+        $data = api_request_json();
+        $links = is_array($data['userLinks'] ?? $data['links'] ?? null) ? ($data['userLinks'] ?? $data['links']) : [];
+        $applied = grooflow_rrhh_apply_user_links($pdo, $links);
+        $meta = grooflow_kv_get($pdo, 'settings:rrhh');
+        $meta = is_array($meta) ? $meta : [];
+        $meta['userLinks'] = $links;
+        unset($meta['employees']);
+        grooflow_kv_set($pdo, 'settings:rrhh', $meta);
+        api_json_response(['ok' => true, 'linked' => $applied]);
+
+        return;
+    }
+
+    if (preg_match('#^/lists/([A-Za-z0-9_-]+)/delete$#', $path, $m) && $method === 'POST') {
+        $data = api_request_json();
+        $ids = is_array($data['ids'] ?? null) ? $data['ids'] : [];
+        $result = grooflow_lists_delete(
+            $pdo,
+            $m[1],
+            $ids,
+            ! empty($data['allMatching']),
+            trim((string) ($data['search'] ?? ''))
+        );
+        api_json_response(['ok' => true, ...$result]);
+
+        return;
+    }
+
+    if (preg_match('#^/lists/([A-Za-z0-9_-]+)$#', $path, $m) && $method === 'GET') {
+        api_json_response(['ok' => true, ...grooflow_lists_page($pdo, $m[1], $_GET)]);
+
+        return;
+    }
+
+    if ($path === '/catalog/areas' && $method === 'GET') {
+        if (! function_exists('areas_admin_list_active')) {
+            require_once (defined('CRON_ROOT') ? CRON_ROOT : dirname(__DIR__, 2)) . '/backend/lib/areas_admin_api.php';
+        }
+        areas_admin_ensure_table($pdo);
+        $onlyActive = ! isset($_GET['all']);
+        if ($onlyActive) {
+            api_json_response(['ok' => true, 'items' => areas_admin_list_active($pdo)]);
+        } else {
+            $items = $pdo->query("SELECT * FROM app_areas_admin WHERE is_deleted = 0 ORDER BY sort_order, nombre")->fetchAll(PDO::FETCH_ASSOC) ?: [];
+            api_json_response(['ok' => true, 'items' => $items]);
+        }
+
+        return;
+    }
+
+    if ($path === '/catalog/areas' && $method === 'POST') {
+        grooflow_assert_admin($pdo);
+        if (! function_exists('areas_admin_create')) {
+            require_once (defined('CRON_ROOT') ? CRON_ROOT : dirname(__DIR__, 2)) . '/backend/lib/areas_admin_api.php';
+        }
+        api_json_response(['ok' => true, 'item' => areas_admin_create($pdo, api_request_json())]);
+
+        return;
+    }
+
+    if (preg_match('#^/catalog/areas/(\d+)$#', $path, $m) && ($method === 'PUT' || $method === 'PATCH')) {
+        grooflow_assert_admin($pdo);
+        if (! function_exists('areas_admin_update')) {
+            require_once (defined('CRON_ROOT') ? CRON_ROOT : dirname(__DIR__, 2)) . '/backend/lib/areas_admin_api.php';
+        }
+        api_json_response(['ok' => true, 'item' => areas_admin_update($pdo, (int) $m[1], api_request_json())]);
+
+        return;
+    }
+
+    if (preg_match('#^/catalog/areas/(\d+)$#', $path, $m) && $method === 'DELETE') {
+        grooflow_assert_admin($pdo);
+        if (! function_exists('areas_admin_delete')) {
+            require_once (defined('CRON_ROOT') ? CRON_ROOT : dirname(__DIR__, 2)) . '/backend/lib/areas_admin_api.php';
+        }
+        areas_admin_delete($pdo, (int) $m[1]);
+        api_json_response(['ok' => true]);
+
+        return;
+    }
+
+    if ($path === '/catalog/puestos' && $method === 'GET') {
+        api_json_response(['ok' => true, 'items' => grooflow_puestos_list($pdo, ! isset($_GET['all']))]);
+
+        return;
+    }
+
+    if ($path === '/catalog/puestos' && $method === 'POST') {
+        grooflow_assert_admin($pdo);
+        api_json_response(['ok' => true, 'item' => grooflow_puestos_save($pdo, api_request_json())]);
+
+        return;
+    }
+
+    if (preg_match('#^/catalog/puestos/(\d+)$#', $path, $m) && ($method === 'PUT' || $method === 'PATCH')) {
+        grooflow_assert_admin($pdo);
+        api_json_response(['ok' => true, 'item' => grooflow_puestos_save($pdo, api_request_json(), (int) $m[1])]);
+
+        return;
+    }
+
+    if (preg_match('#^/catalog/puestos/(\d+)$#', $path, $m) && $method === 'DELETE') {
+        grooflow_assert_admin($pdo);
+        grooflow_puestos_delete($pdo, (int) $m[1]);
+        api_json_response(['ok' => true]);
+
+        return;
+    }
+
+    if ($path === '/catalog/turnos' && $method === 'GET') {
+        api_json_response(['ok' => true, 'items' => grooflow_turnos_catalog_list($pdo, ! isset($_GET['all']))]);
+
+        return;
+    }
+
+    if ($path === '/catalog/turnos' && $method === 'POST') {
+        grooflow_assert_admin($pdo);
+        api_json_response(['ok' => true, 'item' => grooflow_turnos_catalog_save($pdo, api_request_json())]);
+
+        return;
+    }
+
+    if (preg_match('#^/catalog/turnos/(\d+)$#', $path, $m) && ($method === 'PUT' || $method === 'PATCH')) {
+        grooflow_assert_admin($pdo);
+        api_json_response(['ok' => true, 'item' => grooflow_turnos_catalog_save($pdo, api_request_json(), (int) $m[1])]);
+
+        return;
+    }
+
+    if (preg_match('#^/catalog/turnos/(\d+)$#', $path, $m) && $method === 'DELETE') {
+        grooflow_assert_admin($pdo);
+        grooflow_turnos_catalog_delete($pdo, (int) $m[1]);
+        api_json_response(['ok' => true]);
+
+        return;
     }
 
     api_json_response(['ok' => false, 'error' => 'Ruta no encontrada'], 404);

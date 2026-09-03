@@ -155,6 +155,8 @@ function grooflow_asistencia_compose_settings(PDO $pdo): array
             'autoRefreshIntervalMinutes' => 30,
             'autoRefreshWindowStart' => '06:00',
             'autoRefreshWindowEnd' => '22:00',
+            'staffSyncEnabled' => true,
+            'staffSyncIntervalMinutes' => 60,
         ],
         'requirements' => [],
         'staff' => [],

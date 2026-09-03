@@ -28,6 +28,15 @@ function grooflow_normalize_sede_key(string $name): string
     };
 }
 
+/** Quita prefijo tipo "10. " de etiquetas legacy. */
+function grooflow_sede_display_name(string $name): string
+{
+    $name = trim($name);
+    $stripped = preg_replace('/^\d+\.\s*/u', '', $name) ?? $name;
+
+    return trim($stripped) !== '' ? trim($stripped) : $name;
+}
+
 /** @return list<array{tenant_id:int,centro_id:int,nombre:string,slug:string,nombre_codigo:string}> */
 function grooflow_list_sedes(PDO $pdo): array
 {
@@ -74,7 +83,7 @@ function grooflow_sedes_catalog_from_tenants(PDO $pdo, mixed $storedCatalog = nu
 
     $catalog = [];
     foreach (grooflow_list_sedes($pdo) as $tenant) {
-        $nombre = trim((string) ($tenant['nombre'] ?? ''));
+        $nombre = grooflow_sede_display_name(trim((string) ($tenant['nombre'] ?? '')));
         if ($nombre === '') {
             continue;
         }

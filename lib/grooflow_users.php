@@ -105,6 +105,22 @@ function grooflow_sede_names(PDO $pdo, int $userId, int $nivelId, ?array $overla
         return [];
     }
     require_once __DIR__ . '/grooflow_sedes.php';
+
+    // Fuente de verdad: sedes asignadas en Gestión (app_usuario_sedes).
+    $assigned = auth_user_sedes_assigned($pdo, $userId);
+    if ($assigned !== []) {
+        $names = [];
+        foreach ($assigned as $sede) {
+            $nombre = grooflow_resolve_sede_canonical($pdo, (string) ($sede['nombre'] ?? ''));
+            if ($nombre !== '') {
+                $names[] = $nombre;
+            }
+        }
+
+        return array_values(array_unique($names));
+    }
+
+    // Sin asignación en Gestión: overlay de GrooFlow (legacy) o menú completo.
     if (is_array($overlaySedes) && $overlaySedes !== []) {
         $names = [];
         foreach ($overlaySedes as $sede) {
@@ -133,15 +149,19 @@ function grooflow_sede_names(PDO $pdo, int $userId, int $nivelId, ?array $overla
 
 function grooflow_all_sedes_flag(PDO $pdo, int $userId, int $nivelId, ?array $overlaySedes, ?bool $overlayAllSedes): bool
 {
+    $assigned = auth_user_sedes_assigned($pdo, $userId);
+    // Si Gestión tiene sedes concretas, nunca tratar como "todas".
+    if ($assigned !== []) {
+        return false;
+    }
     if ($overlayAllSedes !== null) {
         return $overlayAllSedes;
     }
     if (is_array($overlaySedes) && $overlaySedes !== []) {
         return false;
     }
-    $assigned = auth_user_sedes_assigned($pdo, $userId);
 
-    return $assigned === [] && auth_nivel_has_full_menu($pdo, $nivelId);
+    return auth_nivel_has_full_menu($pdo, $nivelId);
 }
 
 /** @return list<array<string, mixed>> */
@@ -254,6 +274,52 @@ function grooflow_user_to_app(PDO $pdo, array $row): array
         $user['theme'] = $theme;
     }
 
+    $documentNumber = trim((string) ($row['identificacion'] ?? $row['buk_dni'] ?? ''));
+    if ($documentNumber !== '') {
+        $user['documentNumber'] = $documentNumber;
+    }
+    $jobTitle = trim((string) ($row['puesto'] ?? $row['especialidad'] ?? ''));
+    if ($jobTitle === '' && isset($extra['jobTitle'])) {
+        $jobTitle = trim((string) $extra['jobTitle']);
+    }
+    if ($jobTitle !== '') {
+        $user['jobTitle'] = $jobTitle;
+    }
+    $workArea = trim((string) ($row['area'] ?? ''));
+    if ($workArea === '' && isset($extra['workArea'])) {
+        $workArea = trim((string) $extra['workArea']);
+    }
+    if ($workArea !== '') {
+        $user['workArea'] = $workArea;
+    }
+    $shiftLabel = trim((string) ($row['turno'] ?? ''));
+    $shiftSchedule = trim((string) ($row['turno_horario'] ?? ''));
+    $shiftCode = trim((string) ($row['turno_codigo'] ?? ''));
+    if ($shiftLabel !== '') {
+        $user['shiftLabel'] = $shiftLabel;
+    }
+    if ($shiftSchedule !== '') {
+        $user['shiftSchedule'] = $shiftSchedule;
+    }
+    if ($shiftCode !== '') {
+        $user['shiftCode'] = $shiftCode;
+    }
+    if (isset($extra['hireDate']) && is_string($extra['hireDate']) && $extra['hireDate'] !== '') {
+        $user['hireDate'] = $extra['hireDate'];
+    }
+    if (isset($extra['contractType']) && is_string($extra['contractType']) && $extra['contractType'] !== '') {
+        $user['contractType'] = $extra['contractType'];
+    } elseif (trim((string) ($row['contrato'] ?? '')) !== '') {
+        $user['contractType'] = 'otro';
+        $user['contractLabel'] = trim((string) $row['contrato']);
+    }
+    if (isset($extra['weeklyHours']) && is_numeric($extra['weeklyHours'])) {
+        $user['weeklyHours'] = (float) $extra['weeklyHours'];
+    }
+    if (! empty($row['buk_synced_at'])) {
+        $user['bukSyncedAt'] = date('c', strtotime((string) $row['buk_synced_at']));
+    }
+
     return $user;
 }
 
@@ -335,6 +401,49 @@ function grooflow_upsert_user_from_app(PDO $pdo, array $user, bool $allowCreate 
         $status,
         $id,
     ]);
+
+    // Campos laborales (SST / Buk): columnas dedicadas + perfil extra.
+    $occupationalSets = [];
+    $occupationalParams = [];
+    $map = [
+        'documentNumber' => 'identificacion',
+        'workArea' => 'area',
+        'jobTitle' => 'puesto',
+        'shiftLabel' => 'turno',
+        'shiftSchedule' => 'turno_horario',
+        'shiftCode' => 'turno_codigo',
+    ];
+    foreach ($map as $appKey => $col) {
+        if (array_key_exists($appKey, $user)) {
+            $occupationalSets[] = $col . ' = ?';
+            $val = trim((string) ($user[$appKey] ?? ''));
+            $occupationalParams[] = $val !== '' ? $val : null;
+        }
+    }
+    if ($occupationalSets !== []) {
+        usuarios_ensure_columns($pdo);
+        $occupationalParams[] = $id;
+        $pdo->prepare('UPDATE app_usuarios SET ' . implode(', ', $occupationalSets) . ' WHERE id = ?')
+            ->execute($occupationalParams);
+    }
+
+    // Persistir sedes en Gestión (app_usuario_sedes) para que los comboboxes coincidan.
+    if (array_key_exists('sedes', $user) || array_key_exists('allSedes', $user)) {
+        $sedeIds = [];
+        if (! empty($user['allSedes'])) {
+            if (table_exists($pdo, 'tenants')) {
+                foreach (auth_all_tenant_sedes($pdo) as $sede) {
+                    $sedeIds[] = (int) ($sede['id'] ?? $sede['centro_id'] ?? 0);
+                }
+            }
+        } elseif (! empty($user['sedes']) && is_array($user['sedes'])) {
+            $sedeIds = grooflow_sede_ids_from_names($pdo, array_map('strval', $user['sedes']));
+        }
+        $sedeIds = array_values(array_filter($sedeIds));
+        if ($sedeIds !== [] || (array_key_exists('sedes', $user) && empty($user['allSedes']))) {
+            usuarios_sync_sedes($pdo, $id, $sedeIds);
+        }
+    }
 
     grooflow_save_perfil($pdo, $id, $user, $role, $nivelId);
     $stmt = $pdo->prepare('SELECT u.*, n.nombre AS nivel_nombre FROM app_usuarios u LEFT JOIN app_niveles n ON n.id = u.nivel_id WHERE u.id = ?');
@@ -466,15 +575,30 @@ function grooflow_sede_ids_from_names(PDO $pdo, array $names): array
     if (! table_exists($pdo, 'tenants') || $names === []) {
         return [];
     }
+    require_once __DIR__ . '/grooflow_sedes.php';
+    $want = [];
+    foreach ($names as $name) {
+        $key = grooflow_normalize_sede_key((string) $name);
+        if ($key !== '') {
+            $want[$key] = true;
+        }
+    }
+    if ($want === []) {
+        return [];
+    }
     $ids = [];
     foreach (auth_all_tenant_sedes($pdo) as $sede) {
         $nombre = trim((string) ($sede['nombre'] ?? ''));
-        if ($nombre !== '' && in_array($nombre, $names, true)) {
+        if ($nombre === '') {
+            continue;
+        }
+        $key = grooflow_normalize_sede_key($nombre);
+        if (isset($want[$key])) {
             $ids[] = (int) ($sede['id'] ?? $sede['centro_id'] ?? 0);
         }
     }
 
-    return array_values(array_filter($ids));
+    return array_values(array_filter(array_unique($ids)));
 }
 
 function grooflow_soft_delete_user(PDO $pdo, string $idOrEmail): void
