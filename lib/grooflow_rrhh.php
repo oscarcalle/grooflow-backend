@@ -1733,10 +1733,18 @@ function grooflow_rrhh_project_asistencia_staff(PDO $pdo, array $options = []): 
         if ($idx !== null && isset($staff[$idx]) && is_array($staff[$idx])) {
             $existing = $staff[$idx];
             $next = $existing;
-            foreach (['fullName', 'cargoLabel', 'sedeName', 'rut', 'email', 'phone', 'bukEmployeeId', 'source', 'usuarioId'] as $k) {
+            foreach (['fullName', 'sedeName', 'rut', 'email', 'phone', 'bukEmployeeId', 'source', 'usuarioId'] as $k) {
                 if (array_key_exists($k, $official) && $official[$k] !== null) {
                     $next[$k] = $official[$k];
                 }
+            }
+            // Cargo operativo = Gestión. Buk solo comparativa: no pisar cargoLabel.
+            $hasGestionLink = trim((string) ($existing['usuarioId'] ?? '')) !== ''
+                || (($existing['source'] ?? '') === 'users');
+            if (! $hasGestionLink && empty($existing['cargoLabel'])) {
+                $next['cargoLabel'] = $official['cargoLabel'];
+            } else {
+                $next['cargoLabel'] = (string) ($existing['cargoLabel'] ?? $official['cargoLabel']);
             }
             // Preservar overrides operativos (Fase 0).
             $next['area'] = (string) ($existing['area'] ?? 'administracion');
