@@ -159,7 +159,24 @@ function grooflow_rrhh_terminated(string $status): bool
 {
     $s = mb_strtolower(trim($status));
 
-    return in_array($s, ['inactivo', 'desvinculado', 'terminated', 'inactive', 'baja'], true);
+    return in_array($s, [
+        'inactivo', 'desvinculado', 'terminated', 'inactive', 'baja',
+        'cesado', 'finiquitado', 'retirado', 'cese', 'baja laboral',
+    ], true);
+}
+
+function grooflow_rrhh_end_date_passed(?string $endDate): bool
+{
+    $endDate = trim((string) $endDate);
+    if ($endDate === '') {
+        return false;
+    }
+    $ts = strtotime(substr($endDate, 0, 10));
+    if ($ts === false) {
+        return false;
+    }
+
+    return $ts < strtotime('today');
 }
 
 function grooflow_rrhh_str(mixed $v): string
@@ -234,6 +251,7 @@ function grooflow_rrhh_normalize_buk_pe_employee(array $raw): array
     $status = grooflow_rrhh_str($raw['status'] ?? 'desconocido') ?: 'desconocido';
     $endDate = grooflow_rrhh_str($currentJob['end_date'] ?? $raw['active_until'] ?? '');
     $fullName = grooflow_rrhh_str($raw['full_name'] ?? $raw['first_name'] ?? 'Sin nombre') ?: 'Sin nombre';
+    $isTerminated = grooflow_rrhh_terminated($status) || grooflow_rrhh_end_date_passed($endDate);
 
     return [
         'bukId' => (int) ($raw['id'] ?? 0),
@@ -247,8 +265,8 @@ function grooflow_rrhh_normalize_buk_pe_employee(array $raw): array
         'personalEmail' => grooflow_rrhh_str($raw['personal_email'] ?? '') ?: null,
         'phone' => grooflow_rrhh_str($raw['phone'] ?? $raw['office_phone'] ?? '') ?: null,
         'status' => $status,
-        'isActive' => ! grooflow_rrhh_terminated($status),
-        'isTerminated' => grooflow_rrhh_terminated($status),
+        'isActive' => ! $isTerminated,
+        'isTerminated' => $isTerminated,
         'cargo' => grooflow_rrhh_str($role['name'] ?? '') ?: null,
         'cargoCode' => grooflow_rrhh_str($role['code'] ?? '') ?: null,
         'area' => grooflow_rrhh_str($roleFamily['name'] ?? '') ?: null,
@@ -1862,11 +1880,13 @@ function grooflow_rrhh_identity_diagnosis(PDO $pdo, int $sampleLimit = 40): arra
 
     $sampleLimit = max(5, min(100, $sampleLimit));
     $policy = [
-        'sourceOfTruth' => 'buk.pe',
+        'sourceOfTruth' => 'gestion',
+        'bukRole' => 'comparativa',
         'altaSinUsuario' => 'pendiente_notificacion',
         'cesadoDesactivaAccesoYOrganigrama' => true,
         'turnosPublica' => 'encargado_sede',
-        'camposOficialesBuk' => ['dni', 'cargo', 'sede_obra', 'activo'],
+        'camposOficialesGestion' => ['nombre', 'dni', 'cargo', 'sede', 'activo'],
+        'camposComparativaBuk' => ['dni', 'activo', 'cesado', 'marcaciones'],
         'camposEditablesGrooflow' => ['area_organigrama', 'critico', 'manager'],
     ];
 

@@ -62,7 +62,7 @@ function grooflow_assert_cron_or_admin(PDO $pdo, ?string $providedOverride = nul
         if (function_exists('api_require_auth')) {
             api_require_auth($pdo);
         }
-        grooflow_assert_admin($pdo);
+        grooflow_assert_rrhh_editor($pdo);
 
         return 'admin';
     }

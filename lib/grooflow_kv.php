@@ -36,8 +36,41 @@ function grooflow_kv_get(PDO $pdo, string $key): mixed
     $table = grooflow_kv_array_tables()[$key] ?? null;
     if ($table !== null) {
         $items = grooflow_table_list($pdo, $table);
-        if ($items !== []) {
-            return $items;
+        $stmt = $pdo->prepare('SELECT value FROM grooflow_kv WHERE k = ? LIMIT 1');
+        $stmt->execute([$key]);
+        $raw = $stmt->fetchColumn();
+        $fromKv = null;
+        if ($raw !== false && $raw !== null) {
+            $decoded = grooflow_json_decode(is_string($raw) ? $raw : (string) $raw);
+            if (is_array($decoded)) {
+                $fromKv = $decoded;
+            }
+        }
+        // Fusionar tabla + blob por id (evita pérdida si una capa quedó parcial).
+        if ($items !== [] || (is_array($fromKv) && $fromKv !== [])) {
+            $map = [];
+            if (is_array($fromKv)) {
+                foreach ($fromKv as $it) {
+                    if (! is_array($it)) {
+                        continue;
+                    }
+                    $id = trim((string) ($it['id'] ?? ''));
+                    if ($id !== '') {
+                        $map[$id] = $it;
+                    }
+                }
+            }
+            foreach ($items as $it) {
+                if (! is_array($it)) {
+                    continue;
+                }
+                $id = trim((string) ($it['id'] ?? ''));
+                if ($id !== '') {
+                    $map[$id] = $it;
+                }
+            }
+
+            return array_values($map);
         }
     }
 
@@ -159,28 +192,47 @@ function grooflow_table_replace(PDO $pdo, string $table, array $items): void
         VALUES (?, ?, ?, ?)
         ON DUPLICATE KEY UPDATE payload = VALUES(payload), location = VALUES(location), usuario_id = VALUES(usuario_id)
     ';
-    $stmt = $pdo->prepare($sql);
-    foreach ($items as $item) {
-        if (! is_array($item)) {
-            continue;
+    $started = false;
+    try {
+        if (! $pdo->inTransaction()) {
+            $pdo->beginTransaction();
+            $started = true;
         }
-        $id = trim((string) ($item['id'] ?? ''));
-        if ($id === '') {
-            continue;
+        $stmt = $pdo->prepare($sql);
+        foreach ($items as $item) {
+            if (! is_array($item)) {
+                continue;
+            }
+            $id = trim((string) ($item['id'] ?? ''));
+            if ($id === '') {
+                continue;
+            }
+            $keep[] = $id;
+            $location = isset($item['location']) ? (string) $item['location'] : (isset($item['homeBase']) ? (string) $item['homeBase'] : null);
+            $usuarioId = null;
+            if (isset($item['userId']) && ctype_digit((string) $item['userId'])) {
+                $usuarioId = (int) $item['userId'];
+            }
+            $stmt->execute([$id, grooflow_json_encode($item), $location !== '' ? $location : null, $usuarioId]);
         }
-        $keep[] = $id;
-        $location = isset($item['location']) ? (string) $item['location'] : (isset($item['homeBase']) ? (string) $item['homeBase'] : null);
-        $usuarioId = null;
-        if (isset($item['userId']) && ctype_digit((string) $item['userId'])) {
-            $usuarioId = (int) $item['userId'];
+        if ($keep === []) {
+            if ($started) {
+                $pdo->commit();
+            }
+
+            return;
         }
-        $stmt->execute([$id, grooflow_json_encode($item), $location !== '' ? $location : null, $usuarioId]);
+        $placeholders = implode(',', array_fill(0, count($keep), '?'));
+        $pdo->prepare('DELETE FROM `' . $table . '` WHERE id NOT IN (' . $placeholders . ')')->execute($keep);
+        if ($started) {
+            $pdo->commit();
+        }
+    } catch (Throwable $e) {
+        if ($started && $pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        throw $e;
     }
-    if ($keep === []) {
-        return;
-    }
-    $placeholders = implode(',', array_fill(0, count($keep), '?'));
-    $pdo->prepare('DELETE FROM `' . $table . '` WHERE id NOT IN (' . $placeholders . ')')->execute($keep);
 }
 
 function grooflow_table_upsert_one(PDO $pdo, string $table, array $item): array

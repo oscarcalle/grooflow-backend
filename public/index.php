@@ -635,7 +635,7 @@ function grooflow_dispatch(PDO $pdo): void
     }
 
     if ($path === '/rrhh/apply-terminations' && $method === 'POST') {
-        grooflow_assert_admin($pdo);
+        grooflow_assert_rrhh_editor($pdo);
         $data = api_request_json();
         $result = grooflow_rrhh_apply_terminations($pdo, [
             'dryRun' => ! empty($data['dryRun']),
@@ -647,7 +647,7 @@ function grooflow_dispatch(PDO $pdo): void
     }
 
     if ($path === '/rrhh/link-user' && $method === 'POST') {
-        grooflow_assert_admin($pdo);
+        grooflow_assert_rrhh_editor($pdo);
         $data = api_request_json();
         $bukId = (int) ($data['bukId'] ?? $data['bukEmployeeId'] ?? 0);
         $userId = trim((string) ($data['userId'] ?? ''));
@@ -659,7 +659,7 @@ function grooflow_dispatch(PDO $pdo): void
     }
 
     if ($path === '/rrhh/project-asistencia-staff' && $method === 'POST') {
-        grooflow_assert_admin($pdo);
+        grooflow_assert_rrhh_editor($pdo);
         $data = api_request_json();
         $onlySedes = is_array($data['onlySedes'] ?? null) ? $data['onlySedes'] : null;
         $result = grooflow_rrhh_project_asistencia_staff($pdo, [
@@ -684,7 +684,7 @@ function grooflow_dispatch(PDO $pdo): void
     }
 
     if ($path === '/rrhh/sync' && $method === 'POST') {
-        grooflow_assert_admin($pdo);
+        grooflow_assert_rrhh_editor($pdo);
         $result = grooflow_rrhh_sync_from_apis($pdo, api_request_json());
         api_json_response(['ok' => true, ...$result]);
 
@@ -692,7 +692,7 @@ function grooflow_dispatch(PDO $pdo): void
     }
 
     if ($path === '/rrhh/links' && $method === 'POST') {
-        grooflow_assert_admin($pdo);
+        grooflow_assert_rrhh_editor($pdo);
         $data = api_request_json();
         $links = is_array($data['userLinks'] ?? $data['links'] ?? null) ? ($data['userLinks'] ?? $data['links']) : [];
         $applied = grooflow_rrhh_apply_user_links($pdo, $links);

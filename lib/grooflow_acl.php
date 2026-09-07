@@ -26,6 +26,53 @@ function grooflow_assert_admin(PDO $pdo): void
     }
 }
 
+/** True si el usuario tiene el módulo en su menú asignado (o es admin). */
+function grooflow_caller_has_modulo(PDO $pdo, string $moduloKey): bool
+{
+    if (grooflow_caller_is_admin($pdo)) {
+        return true;
+    }
+    $row = api_current_user();
+    if (! is_array($row)) {
+        return false;
+    }
+    $usuarioId = (int) ($row['id'] ?? 0);
+    if ($usuarioId <= 0) {
+        return false;
+    }
+    require_once __DIR__ . '/grooflow_usuario_menu.php';
+    require_once __DIR__ . '/grooflow_menu.php';
+    try {
+        $info = grooflow_usuario_menu_for_user($pdo, $usuarioId);
+    } catch (Throwable) {
+        return false;
+    }
+    $ids = array_values(array_filter(array_map('intval', $info['menu_ids'] ?? [])));
+    if ($ids === []) {
+        return false;
+    }
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+    $stmt = $pdo->prepare("
+        SELECT 1 FROM grooflow_menu_opciones
+        WHERE id IN ({$placeholders})
+          AND modulo_key = ?
+          AND estado = 'activo'
+        LIMIT 1
+    ");
+    $stmt->execute([...$ids, $moduloKey]);
+
+    return (bool) $stmt->fetchColumn();
+}
+
+/** Editor RRHH: admin o menú «Recursos Humanos». */
+function grooflow_assert_rrhh_editor(PDO $pdo): void
+{
+    if (grooflow_caller_has_modulo($pdo, 'Recursos Humanos')) {
+        return;
+    }
+    throw new RuntimeException('Se requieren permisos de Recursos Humanos o administrador');
+}
+
 /** @return list<string> */
 function grooflow_allowed_roles(): array
 {
