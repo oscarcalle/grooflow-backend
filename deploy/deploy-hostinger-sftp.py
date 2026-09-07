@@ -66,12 +66,21 @@ def upload_dir(sftp: paramiko.SFTPClient, local: Path, remote: str) -> int:
     return count
 
 
-def upload_file(sftp: paramiko.SFTPClient, local: Path, remote: str) -> None:
-    sftp.put(str(local), remote)
-
-
 def normalize_html(text: str) -> str:
-    return text.replace("\r\n", "\n").strip()
+    # Hostinger/SFTP a veces altera CR/LF; comparar sin retornos de carro.
+    return text.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def html_bundle_token(text: str) -> str | None:
+    for line in normalize_html(text).splitlines():
+        if "index-" in line and ".js" in line:
+            return line.strip()
+    return None
+
+
+def upload_file(sftp: paramiko.SFTPClient, local: Path, remote: str) -> None:
+    with local.open("rb") as handle:
+        sftp.putfo(handle, remote)
 
 
 def remote_text(sftp: paramiko.SFTPClient, remote: str) -> str:
@@ -106,8 +115,18 @@ def verify_index_html(sftp: paramiko.SFTPClient, local: Path, remote: str) -> bo
     local_index = normalize_html(local.read_text(encoding="utf-8"))
     if remote_index == local_index:
         return True
+    # Misma entrada de bundle = deploy válido pese a CR/LF del servidor.
+    local_tok = html_bundle_token(local_index)
+    remote_tok = html_bundle_token(remote_index)
+    if local_tok and local_tok == remote_tok:
+        return True
     upload_file(sftp, local, remote)
-    return normalize_html(remote_text(sftp, remote)) == local_index
+    remote_index = normalize_html(remote_text(sftp, remote))
+    if normalize_html(local.read_text(encoding="utf-8")) == remote_index:
+        return True
+    local_tok = html_bundle_token(local.read_text(encoding="utf-8"))
+    remote_tok = html_bundle_token(remote_text(sftp, remote))
+    return bool(local_tok and local_tok == remote_tok)
 
 
 def upload_api_gateway(sftp: paramiko.SFTPClient, remote_frontend: str) -> None:
