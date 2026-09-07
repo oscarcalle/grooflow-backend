@@ -184,6 +184,47 @@ function grooflow_rrhh_str(mixed $v): string
     return '';
 }
 
+/** DNI/RUC/etc. canónico para cruce Buk ↔ Gestión ↔ Asistencia. */
+function grooflow_rrhh_doc_key(?string $documentNumber): string
+{
+    if ($documentNumber === null || $documentNumber === '') {
+        return '';
+    }
+    $digits = preg_replace('/\D+/', '', $documentNumber);
+
+    return is_string($digits) ? $digits : '';
+}
+
+/**
+ * Estado de identidad del colaborador maestro.
+ * linked | pending_access | terminated_still_active | terminated | unmatched_doc | unmatched
+ *
+ * @param array<string, mixed> $row fila BD o employee app
+ */
+function grooflow_rrhh_identity_status(array $row): string
+{
+    $linked = $row['linkedUsuarioId'] ?? $row['linked_usuario_id'] ?? null;
+    $linkedStr = $linked !== null && $linked !== '' ? (string) $linked : '';
+    $isTerminated = array_key_exists('isTerminated', $row)
+        ? (bool) $row['isTerminated']
+        : ((int) ($row['is_terminated'] ?? 0) === 1 || grooflow_rrhh_terminated((string) ($row['status'] ?? '')));
+    $doc = grooflow_rrhh_doc_key(
+        isset($row['documentNumber']) ? (string) $row['documentNumber'] : (isset($row['document_number']) ? (string) $row['document_number'] : null)
+    );
+
+    if ($isTerminated) {
+        return $linkedStr !== '' ? 'terminated_still_active' : 'terminated';
+    }
+    if ($linkedStr !== '') {
+        return 'linked';
+    }
+    if ($doc === '') {
+        return 'unmatched_doc';
+    }
+
+    return 'pending_access';
+}
+
 /** @param array<string, mixed> $raw */
 function grooflow_rrhh_normalize_buk_pe_employee(array $raw): array
 {
@@ -302,9 +343,11 @@ function grooflow_rrhh_row_to_app(array $row, array $opts = []): array
         'contentHash' => $row['content_hash'] ?? null,
         'missingFromSource' => (int) ($row['missing_from_source'] ?? 0) === 1,
         'linkedUsuarioId' => $row['linked_usuario_id'] !== null ? (string) $row['linked_usuario_id'] : null,
+        'documentKey' => grooflow_rrhh_doc_key(isset($row['document_number']) ? (string) $row['document_number'] : null),
         'firstSyncedAt' => ! empty($row['first_synced_at']) ? date('c', strtotime((string) $row['first_synced_at'])) : null,
         'lastUpdatedAt' => ! empty($row['last_updated_at']) ? date('c', strtotime((string) $row['last_updated_at'])) : null,
     ];
+    $out['identityStatus'] = grooflow_rrhh_identity_status($out);
     if ($includeRaw) {
         $out['raw'] = $payload['raw'] ?? null;
     }
@@ -618,15 +661,42 @@ function grooflow_rrhh_sync_from_apis(PDO $pdo, array $options = []): array
     $links = grooflow_rrhh_auto_link_users($pdo, $links);
     $meta['userLinks'] = $links;
     grooflow_rrhh_apply_user_links($pdo, $links);
+
+    $pendingSnap = grooflow_rrhh_build_pending_access_snapshot($pdo, $links);
+    $meta['pendingAccessCount'] = $pendingSnap['count'];
+    $meta['pendingAccess'] = $pendingSnap['items'];
+    $meta['pendingAccessAt'] = date('c');
+
+    $terminations = null;
+    $autoDisable = ($options['autoDisableOnTermination'] ?? $meta['autoDisableOnTermination'] ?? true) !== false;
+    if ($autoDisable) {
+        $terminations = grooflow_rrhh_apply_terminations($pdo, [
+            'dryRun' => false,
+            'skipMetaWrite' => true,
+            'userLinks' => $links,
+        ]);
+        $meta['lastTerminationsApply'] = $terminations;
+    }
+
     $at = date('c');
+    $termMsg = '';
+    if (is_array($terminations)) {
+        $td = (int) ($terminations['usersDisabled'] ?? 0);
+        $sr = (int) ($terminations['staffRemoved'] ?? 0);
+        if ($td > 0 || $sr > 0) {
+            $termMsg = sprintf(' · bajas: %d acceso, %d organigrama', $td, $sr);
+        }
+    }
     $message = sprintf(
-        'RRHH sync: +%d · ~%d · =%d · ausentes %d · total %d%s%s',
+        'RRHH sync: +%d · ~%d · =%d · ausentes %d · total %d · pendientes %d%s%s%s',
         $stats['added'],
         $stats['updated'],
         $stats['unchanged'],
         $stats['removedFromSource'],
         $stats['total'],
+        $pendingSnap['count'],
         $asistenciaMatched > 0 ? (" · asistencia {$asistenciaMatched}") : '',
+        $termMsg,
         $truncated ? ' · INCOMPLETO (no se marcaron ausentes)' : ''
     );
     $meta['lastSyncAt'] = $at;
@@ -648,6 +718,8 @@ function grooflow_rrhh_sync_from_apis(PDO $pdo, array $options = []): array
         'employeesLoaded' => $stats['total'],
         'stats' => $stats,
         'asistenciaMatched' => $asistenciaMatched,
+        'pendingAccess' => $pendingSnap['count'],
+        'terminations' => $terminations,
         'truncated' => $truncated,
         'durationMs' => (int) round(microtime(true) * 1000) - $started,
     ]);
@@ -657,6 +729,8 @@ function grooflow_rrhh_sync_from_apis(PDO $pdo, array $options = []): array
     return [
         'stats' => $stats,
         'asistenciaMatched' => $asistenciaMatched,
+        'pendingAccess' => $pendingSnap['count'],
+        'terminations' => $terminations,
         'message' => $message,
         'duration_ms' => (int) round(microtime(true) * 1000) - $started,
         'synced_at' => $at,
@@ -1131,5 +1205,831 @@ function grooflow_rrhh_auto_link_users(PDO $pdo, array $existing): array
     }
 
     return array_values($byBuk);
+}
+
+/**
+ * Cola de activos Buk.pe sin usuario Gestión (política: pendiente, no auto-crear).
+ *
+ * @param list<mixed> $links
+ * @return array{count:int,items:list<array<string,mixed>>}
+ */
+function grooflow_rrhh_build_pending_access_snapshot(PDO $pdo, array $links = []): array
+{
+    grooflow_rrhh_ensure_schema($pdo);
+    $linkedBuk = [];
+    foreach ($links as $link) {
+        if (! is_array($link)) {
+            continue;
+        }
+        $bukId = (int) ($link['bukEmployeeId'] ?? 0);
+        $userId = (string) ($link['userId'] ?? '');
+        if ($bukId > 0 && $userId !== '') {
+            $linkedBuk[$bukId] = true;
+        }
+    }
+
+    $rows = $pdo->query('
+        SELECT buk_id, full_name, document_number, email, personal_email, sede, cargo, linked_usuario_id
+        FROM grooflow_buk_empleados
+        WHERE is_active = 1 AND is_terminated = 0
+        ORDER BY full_name
+    ')->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+    $items = [];
+    foreach ($rows as $row) {
+        $bukId = (int) ($row['buk_id'] ?? 0);
+        $linkedId = trim((string) ($row['linked_usuario_id'] ?? ''));
+        if ($linkedId !== '' || isset($linkedBuk[$bukId])) {
+            continue;
+        }
+        $items[] = [
+            'bukId' => $bukId,
+            'fullName' => (string) ($row['full_name'] ?? ''),
+            'documentNumber' => (string) ($row['document_number'] ?? ''),
+            'documentKey' => grooflow_rrhh_doc_key(isset($row['document_number']) ? (string) $row['document_number'] : null),
+            'email' => (string) ($row['email'] ?? $row['personal_email'] ?? ''),
+            'sede' => (string) ($row['sede'] ?? ''),
+            'cargo' => (string) ($row['cargo'] ?? ''),
+            'identityStatus' => 'pending_access',
+        ];
+    }
+
+    return ['count' => count($items), 'items' => array_slice($items, 0, 200)];
+}
+
+/**
+ * Aplica política de baja: desactiva acceso Gestión y saca del organigrama Asistencia.
+ *
+ * @param array{dryRun?:bool,skipMetaWrite?:bool,userLinks?:list<mixed>,bukIds?:list<int>} $options
+ * @return array<string, mixed>
+ */
+function grooflow_rrhh_apply_terminations(PDO $pdo, array $options = []): array
+{
+    grooflow_rrhh_ensure_schema($pdo);
+    grooflow_asistencia_ensure_schema($pdo);
+
+    $dryRun = ! empty($options['dryRun']);
+    $filterBuk = [];
+    if (isset($options['bukIds']) && is_array($options['bukIds'])) {
+        foreach ($options['bukIds'] as $id) {
+            $n = (int) $id;
+            if ($n > 0) {
+                $filterBuk[$n] = true;
+            }
+        }
+    }
+
+    $links = is_array($options['userLinks'] ?? null) ? $options['userLinks'] : null;
+    if ($links === null) {
+        $meta = grooflow_kv_get($pdo, 'settings:rrhh');
+        $meta = is_array($meta) ? $meta : [];
+        $links = is_array($meta['userLinks'] ?? null) ? $meta['userLinks'] : [];
+    }
+    $linkByBuk = [];
+    foreach ($links as $link) {
+        if (! is_array($link)) {
+            continue;
+        }
+        $bukId = (int) ($link['bukEmployeeId'] ?? 0);
+        $userId = (string) ($link['userId'] ?? '');
+        if ($bukId > 0 && $userId !== '') {
+            $linkByBuk[$bukId] = $userId;
+        }
+    }
+
+    $rows = $pdo->query('
+        SELECT buk_id, full_name, document_number, linked_usuario_id, is_active, is_terminated, status
+        FROM grooflow_buk_empleados
+        WHERE is_terminated = 1 OR is_active = 0
+    ')->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+    $users = grooflow_list_users($pdo);
+    $usersById = [];
+    foreach ($users as $u) {
+        if (! is_array($u)) {
+            continue;
+        }
+        $uid = (string) ($u['id'] ?? '');
+        if ($uid !== '') {
+            $usersById[$uid] = $u;
+        }
+    }
+
+    $staffRows = [];
+    try {
+        $staffRows = $pdo->query('SELECT id, rut, usuario_id, full_name FROM grooflow_asistencia_staff')->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    } catch (Throwable) {
+        $staffRows = [];
+    }
+    $staffByRut = [];
+    $staffByUser = [];
+    foreach ($staffRows as $s) {
+        $sid = (string) ($s['id'] ?? '');
+        if ($sid === '') {
+            continue;
+        }
+        $rut = grooflow_rrhh_doc_key(isset($s['rut']) ? (string) $s['rut'] : null);
+        if ($rut !== '') {
+            $staffByRut[$rut][] = $s;
+        }
+        $uid = trim((string) ($s['usuario_id'] ?? ''));
+        if ($uid !== '' && $uid !== '0') {
+            $staffByUser[$uid][] = $s;
+        }
+    }
+
+    $usersDisabled = [];
+    $staffRemoved = [];
+    $errors = [];
+    $candidates = 0;
+    $seenStaff = [];
+    $seenUsers = [];
+
+    $delStaff = $dryRun ? null : $pdo->prepare('DELETE FROM grooflow_asistencia_staff WHERE id = ?');
+
+    foreach ($rows as $row) {
+        $bukId = (int) ($row['buk_id'] ?? 0);
+        if ($bukId <= 0) {
+            continue;
+        }
+        if ($filterBuk !== [] && ! isset($filterBuk[$bukId])) {
+            continue;
+        }
+        $candidates++;
+        $linkedId = trim((string) ($row['linked_usuario_id'] ?? ''));
+        if ($linkedId === '' && isset($linkByBuk[$bukId])) {
+            $linkedId = (string) $linkByBuk[$bukId];
+        }
+        $doc = grooflow_rrhh_doc_key(isset($row['document_number']) ? (string) $row['document_number'] : null);
+
+        if ($linkedId !== '' && ! isset($seenUsers[$linkedId])) {
+            $u = $usersById[$linkedId] ?? null;
+            if (is_array($u) && (string) ($u['status'] ?? '') !== 'inactive') {
+                $seenUsers[$linkedId] = true;
+                if (! $dryRun) {
+                    try {
+                        grooflow_set_enabled($pdo, $linkedId, false);
+                        $usersDisabled[] = [
+                            'userId' => $linkedId,
+                            'bukId' => $bukId,
+                            'fullName' => (string) ($row['full_name'] ?? ''),
+                            'userName' => (string) ($u['name'] ?? ''),
+                        ];
+                    } catch (Throwable $e) {
+                        $errors[] = 'usuario ' . $linkedId . ': ' . $e->getMessage();
+                    }
+                } else {
+                    $usersDisabled[] = [
+                        'userId' => $linkedId,
+                        'bukId' => $bukId,
+                        'fullName' => (string) ($row['full_name'] ?? ''),
+                        'userName' => (string) ($u['name'] ?? ''),
+                    ];
+                }
+            }
+        }
+
+        $toRemove = [];
+        if ($doc !== '' && isset($staffByRut[$doc])) {
+            foreach ($staffByRut[$doc] as $s) {
+                $toRemove[(string) $s['id']] = $s;
+            }
+        }
+        if ($linkedId !== '' && isset($staffByUser[$linkedId])) {
+            foreach ($staffByUser[$linkedId] as $s) {
+                $toRemove[(string) $s['id']] = $s;
+            }
+        }
+        foreach ($toRemove as $sid => $s) {
+            if (isset($seenStaff[$sid])) {
+                continue;
+            }
+            $seenStaff[$sid] = true;
+            if (! $dryRun && $delStaff) {
+                try {
+                    $delStaff->execute([$sid]);
+                } catch (Throwable $e) {
+                    $errors[] = 'staff ' . $sid . ': ' . $e->getMessage();
+                    continue;
+                }
+            }
+            $staffRemoved[] = [
+                'staffId' => $sid,
+                'fullName' => (string) ($s['full_name'] ?? ''),
+                'bukId' => $bukId,
+                'documentNumber' => (string) ($row['document_number'] ?? ''),
+            ];
+        }
+    }
+
+    $result = [
+        'dryRun' => $dryRun,
+        'candidates' => $candidates,
+        'usersDisabled' => count($usersDisabled),
+        'staffRemoved' => count($staffRemoved),
+        'errors' => $errors,
+        'samples' => [
+            'usersDisabled' => array_slice($usersDisabled, 0, 40),
+            'staffRemoved' => array_slice($staffRemoved, 0, 40),
+        ],
+        'appliedAt' => date('c'),
+    ];
+
+    if (empty($options['skipMetaWrite'])) {
+        $meta = grooflow_kv_get($pdo, 'settings:rrhh');
+        $meta = is_array($meta) ? $meta : [];
+        $meta['lastTerminationsApply'] = $result;
+        grooflow_kv_set($pdo, 'settings:rrhh', $meta);
+    }
+
+    return $result;
+}
+
+/**
+ * Vincula un colaborador Buk.pe a un usuario Gestión (manual o por DNI/email).
+ *
+ * @return array<string, mixed>
+ */
+function grooflow_rrhh_link_user(PDO $pdo, int $bukId, string $userId, string $method = 'manual'): array
+{
+    grooflow_rrhh_ensure_schema($pdo);
+    if ($bukId <= 0 || $userId === '') {
+        throw new InvalidArgumentException('bukId y userId son obligatorios');
+    }
+
+    $st = $pdo->prepare('SELECT buk_id, full_name, email, document_number, is_active, is_terminated FROM grooflow_buk_empleados WHERE buk_id = ?');
+    $st->execute([$bukId]);
+    $emp = $st->fetch(PDO::FETCH_ASSOC);
+    if (! $emp) {
+        throw new RuntimeException('Colaborador Buk.pe no encontrado');
+    }
+
+    $user = grooflow_find_gestion_user($pdo, $userId);
+    if (! $user) {
+        throw new RuntimeException('Usuario Gestión no encontrado');
+    }
+    $uid = (string) ($user['id'] ?? $userId);
+
+    $meta = grooflow_kv_get($pdo, 'settings:rrhh');
+    $meta = is_array($meta) ? $meta : [];
+    $links = is_array($meta['userLinks'] ?? null) ? $meta['userLinks'] : [];
+    $byBuk = [];
+    foreach ($links as $link) {
+        if (! is_array($link)) {
+            continue;
+        }
+        $b = (int) ($link['bukEmployeeId'] ?? 0);
+        if ($b > 0) {
+            $byBuk[$b] = $link;
+        }
+    }
+    $byBuk[$bukId] = [
+        'userId' => $uid,
+        'bukEmployeeId' => $bukId,
+        'matchMethod' => $method !== '' ? $method : 'manual',
+        'linkedAt' => date('c'),
+        'employeeName' => (string) ($emp['full_name'] ?? ''),
+        'employeeEmail' => (string) ($emp['email'] ?? ''),
+    ];
+    $links = array_values($byBuk);
+    $meta['userLinks'] = $links;
+    unset($meta['employees']);
+    grooflow_rrhh_apply_user_links($pdo, $links);
+
+    $pendingSnap = grooflow_rrhh_build_pending_access_snapshot($pdo, $links);
+    $meta['pendingAccessCount'] = $pendingSnap['count'];
+    $meta['pendingAccess'] = $pendingSnap['items'];
+    $meta['pendingAccessAt'] = date('c');
+    grooflow_kv_set($pdo, 'settings:rrhh', $meta);
+
+    return [
+        'bukId' => $bukId,
+        'userId' => $uid,
+        'matchMethod' => $method !== '' ? $method : 'manual',
+        'employeeName' => (string) ($emp['full_name'] ?? ''),
+        'pendingAccess' => $pendingSnap['count'],
+        'identityStatus' => grooflow_rrhh_identity_status([
+            'linked_usuario_id' => $uid,
+            'is_terminated' => (int) ($emp['is_terminated'] ?? 0),
+            'document_number' => $emp['document_number'] ?? null,
+        ]),
+    ];
+}
+
+/**
+ * Heurística área organigrama (solo para altas; no pisa overrides).
+ */
+function grooflow_rrhh_guess_asistencia_area(?string $area, ?string $cargo): string
+{
+    $w = mb_strtolower(trim(($area ?? '') . ' ' . ($cargo ?? '')));
+    if ($w === '') {
+        return 'administracion';
+    }
+    if (preg_match('/m[eé]dic|veterin|asistente\s*vet|counter/u', $w)) {
+        return 'medica';
+    }
+    if (preg_match('/groom|pelu|ba[nñ]ad|alistador/u', $w)) {
+        return 'peluqueria';
+    }
+
+    return 'administracion';
+}
+
+/**
+ * Resuelve sede GrooFlow desde sede/recinto Buk usando mappings/perfiles.
+ *
+ * @param array<string, mixed> $emp
+ * @param array<string, mixed> $settings
+ */
+function grooflow_rrhh_resolve_asistencia_sede(array $emp, array $settings): string
+{
+    $recintoCode = trim((string) ($emp['recinto_codigo'] ?? ''));
+    $recintoName = trim((string) ($emp['recinto_nombre'] ?? ''));
+    $sede = trim((string) ($emp['sede'] ?? ''));
+    $mappings = is_array($settings['sedeMappings'] ?? null) ? $settings['sedeMappings'] : [];
+    $profiles = is_array($settings['sedeProfiles'] ?? null) ? $settings['sedeProfiles'] : [];
+
+    $norm = static function (string $s): string {
+        return mb_strtolower(trim($s));
+    };
+
+    foreach ($mappings as $m) {
+        if (! is_array($m)) {
+            continue;
+        }
+        $code = trim((string) ($m['bukRecintoCode'] ?? ''));
+        $name = trim((string) ($m['sedeName'] ?? ''));
+        if ($name === '') {
+            continue;
+        }
+        if ($recintoCode !== '' && $code !== '' && strcasecmp($code, $recintoCode) === 0) {
+            return $name;
+        }
+    }
+
+    foreach ($profiles as $p) {
+        if (! is_array($p)) {
+            continue;
+        }
+        $code = trim((string) ($p['bukRecintoCode'] ?? ''));
+        $name = trim((string) ($p['sedeName'] ?? ''));
+        if ($name === '') {
+            continue;
+        }
+        if ($recintoCode !== '' && $code !== '' && strcasecmp($code, $recintoCode) === 0) {
+            return $name;
+        }
+    }
+
+    $candidates = [];
+    foreach ($mappings as $m) {
+        if (is_array($m) && trim((string) ($m['sedeName'] ?? '')) !== '') {
+            $candidates[] = trim((string) $m['sedeName']);
+        }
+    }
+    foreach ($profiles as $p) {
+        if (is_array($p) && trim((string) ($p['sedeName'] ?? '')) !== '') {
+            $candidates[] = trim((string) $p['sedeName']);
+        }
+    }
+    $candidates = array_values(array_unique($candidates));
+
+    foreach ($candidates as $name) {
+        $nn = $norm($name);
+        if ($sede !== '' && (str_contains($nn, $norm($sede)) || str_contains($norm($sede), $nn))) {
+            return $name;
+        }
+        if ($recintoName !== '' && (str_contains($nn, $norm($recintoName)) || str_contains($norm($recintoName), $nn))) {
+            return $name;
+        }
+    }
+
+    if ($sede !== '') {
+        return $sede;
+    }
+    if ($candidates !== []) {
+        return $candidates[0];
+    }
+
+    return 'Principal';
+}
+
+/**
+ * Fase 4: proyecta organigrama Asistencia desde colaboradores activos Buk.pe.
+ * Preserva overrides: area, isCritical, isManager, turnos/expectedTime.
+ *
+ * @param array{pruneInactive?:bool,onlySedes?:list<string>} $options
+ * @return array<string, mixed>
+ */
+function grooflow_rrhh_project_asistencia_staff(PDO $pdo, array $options = []): array
+{
+    grooflow_rrhh_ensure_schema($pdo);
+    grooflow_asistencia_ensure_schema($pdo);
+
+    $settings = grooflow_asistencia_get_settings($pdo);
+    $settings = is_array($settings) ? $settings : [
+        'buk' => [],
+        'requirements' => [],
+        'staff' => [],
+        'sedeProfiles' => [],
+        'sedeMappings' => [],
+        'areaKeywords' => ['medica' => [], 'peluqueria' => []],
+    ];
+
+    $staff = is_array($settings['staff'] ?? null) ? $settings['staff'] : [];
+    $byId = [];
+    $byRut = [];
+    $byUser = [];
+    $byBuk = [];
+    foreach ($staff as $idx => $item) {
+        if (! is_array($item)) {
+            continue;
+        }
+        $id = trim((string) ($item['id'] ?? ''));
+        if ($id !== '') {
+            $byId[$id] = $idx;
+        }
+        $rut = grooflow_rrhh_doc_key(isset($item['rut']) ? (string) $item['rut'] : null);
+        if ($rut !== '') {
+            $byRut[$rut] = $idx;
+        }
+        $uid = trim((string) ($item['usuarioId'] ?? $item['userId'] ?? ''));
+        if ($uid !== '' && $uid !== '0') {
+            $byUser[$uid] = $idx;
+        }
+        $bukEmp = (int) ($item['bukEmployeeId'] ?? 0);
+        if ($bukEmp > 0) {
+            $byBuk[$bukEmp] = $idx;
+        } elseif (preg_match('/^buk_(\d+)$/', $id, $m)) {
+            $byBuk[(int) $m[1]] = $idx;
+        }
+    }
+
+    $rows = $pdo->query('
+        SELECT buk_id, full_name, document_number, email, personal_email, phone,
+               cargo, area, sede, recinto_codigo, recinto_nombre, linked_usuario_id,
+               is_active, is_terminated
+        FROM grooflow_buk_empleados
+        WHERE is_active = 1 AND is_terminated = 0
+        ORDER BY full_name
+    ')->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+    $onlySedes = [];
+    if (isset($options['onlySedes']) && is_array($options['onlySedes'])) {
+        foreach ($options['onlySedes'] as $s) {
+            $t = trim((string) $s);
+            if ($t !== '') {
+                $onlySedes[mb_strtolower($t)] = true;
+            }
+        }
+    }
+
+    $added = 0;
+    $updated = 0;
+    $unchanged = 0;
+    $skipped = 0;
+    $seenStaffIds = [];
+    $activeBukIds = [];
+
+    foreach ($rows as $emp) {
+        $bukId = (int) ($emp['buk_id'] ?? 0);
+        if ($bukId <= 0) {
+            continue;
+        }
+        $activeBukIds[$bukId] = true;
+        $doc = grooflow_rrhh_doc_key(isset($emp['document_number']) ? (string) $emp['document_number'] : null);
+        $sedeName = grooflow_rrhh_resolve_asistencia_sede($emp, $settings);
+        if ($onlySedes !== [] && ! isset($onlySedes[mb_strtolower($sedeName)])) {
+            $skipped++;
+            continue;
+        }
+
+        $linkedId = trim((string) ($emp['linked_usuario_id'] ?? ''));
+        $idx = null;
+        if (isset($byBuk[$bukId])) {
+            $idx = $byBuk[$bukId];
+        } elseif ($doc !== '' && isset($byRut[$doc])) {
+            $idx = $byRut[$doc];
+        } elseif ($linkedId !== '' && isset($byUser[$linkedId])) {
+            $idx = $byUser[$linkedId];
+        } elseif (isset($byId['buk_' . $bukId])) {
+            $idx = $byId['buk_' . $bukId];
+        }
+
+        $official = [
+            'fullName' => (string) ($emp['full_name'] ?? ''),
+            'cargoLabel' => trim((string) ($emp['cargo'] ?? '')) !== '' ? (string) $emp['cargo'] : 'Colaborador',
+            'sedeName' => $sedeName,
+            'rut' => $doc !== '' ? $doc : null,
+            'email' => trim((string) ($emp['email'] ?? $emp['personal_email'] ?? '')) ?: null,
+            'phone' => trim((string) ($emp['phone'] ?? '')) ?: null,
+            'bukEmployeeId' => $bukId,
+            'source' => 'buk_pe',
+        ];
+        if ($linkedId !== '') {
+            $official['usuarioId'] = $linkedId;
+        }
+
+        if ($idx !== null && isset($staff[$idx]) && is_array($staff[$idx])) {
+            $existing = $staff[$idx];
+            $next = $existing;
+            foreach (['fullName', 'cargoLabel', 'sedeName', 'rut', 'email', 'phone', 'bukEmployeeId', 'source', 'usuarioId'] as $k) {
+                if (array_key_exists($k, $official) && $official[$k] !== null) {
+                    $next[$k] = $official[$k];
+                }
+            }
+            // Preservar overrides operativos (Fase 0).
+            $next['area'] = (string) ($existing['area'] ?? 'administracion');
+            $next['isCritical'] = ! empty($existing['isCritical']);
+            if (array_key_exists('isManager', $existing)) {
+                $next['isManager'] = ! empty($existing['isManager']);
+            }
+            foreach (['expectedTime', 'shift', 'shiftMode', 'weeklyShifts', 'expectedTimeNight', 'sortOrder', 'avatarUrl', 'matchArea', 'matchSpecialty'] as $keep) {
+                if (array_key_exists($keep, $existing)) {
+                    $next[$keep] = $existing[$keep];
+                }
+            }
+            $sid = trim((string) ($next['id'] ?? ''));
+            if ($sid === '') {
+                $next['id'] = 'buk_' . $bukId;
+                $sid = $next['id'];
+            }
+            $changed = json_encode($existing) !== json_encode($next);
+            $staff[$idx] = $next;
+            $seenStaffIds[$sid] = true;
+            if ($changed) {
+                $updated++;
+            } else {
+                $unchanged++;
+            }
+            continue;
+        }
+
+        $member = [
+            'id' => 'buk_' . $bukId,
+            'sedeName' => $sedeName,
+            'fullName' => $official['fullName'],
+            'cargoLabel' => $official['cargoLabel'],
+            'area' => grooflow_rrhh_guess_asistencia_area(
+                isset($emp['area']) ? (string) $emp['area'] : null,
+                isset($emp['cargo']) ? (string) $emp['cargo'] : null
+            ),
+            'expectedTime' => '08:00',
+            'shift' => 'day',
+            'isCritical' => false,
+            'isManager' => false,
+            'rut' => $official['rut'],
+            'email' => $official['email'],
+            'phone' => $official['phone'],
+            'bukEmployeeId' => $bukId,
+            'source' => 'buk_pe',
+            'sortOrder' => 0,
+        ];
+        if ($linkedId !== '') {
+            $member['usuarioId'] = $linkedId;
+        }
+        $staff[] = $member;
+        $seenStaffIds[$member['id']] = true;
+        $added++;
+    }
+
+    $pruned = 0;
+    $prune = ($options['pruneInactive'] ?? true) !== false;
+    if ($prune) {
+        $kept = [];
+        foreach ($staff as $item) {
+            if (! is_array($item)) {
+                continue;
+            }
+            $id = trim((string) ($item['id'] ?? ''));
+            $bukEmp = (int) ($item['bukEmployeeId'] ?? 0);
+            if ($bukEmp <= 0 && preg_match('/^buk_(\d+)$/', $id, $m)) {
+                $bukEmp = (int) $m[1];
+            }
+            $source = (string) ($item['source'] ?? '');
+            $isProjected = $source === 'buk_pe' || $bukEmp > 0 || str_starts_with($id, 'buk_');
+            if ($isProjected && $bukEmp > 0 && ! isset($activeBukIds[$bukEmp])) {
+                $pruned++;
+                continue;
+            }
+            $kept[] = $item;
+        }
+        $staff = $kept;
+    }
+
+    $settings['staff'] = array_values($staff);
+    grooflow_asistencia_set_settings($pdo, $settings);
+
+    $meta = grooflow_kv_get($pdo, 'settings:rrhh');
+    $meta = is_array($meta) ? $meta : [];
+    $result = [
+        'added' => $added,
+        'updated' => $updated,
+        'unchanged' => $unchanged,
+        'skipped' => $skipped,
+        'pruned' => $pruned,
+        'staffTotal' => count($settings['staff']),
+        'activeEmployees' => count($activeBukIds),
+        'projectedAt' => date('c'),
+    ];
+    $meta['lastAsistenciaProject'] = $result;
+    unset($meta['employees']);
+    grooflow_kv_set($pdo, 'settings:rrhh', $meta);
+
+    return $result;
+}
+
+/**
+ * Diagnóstico de identidad Fase 1 (Buk.pe ↔ Gestión ↔ Asistencia).
+ * Política Fase 0: alta Buk.pe; pendientes de acceso (no auto-crear usuario);
+ * cesados → desactivar acceso y sacar de organigrama; turnos los publica el encargado.
+ *
+ * @return array<string, mixed>
+ */
+function grooflow_rrhh_identity_diagnosis(PDO $pdo, int $sampleLimit = 40): array
+{
+    grooflow_rrhh_ensure_schema($pdo);
+    require_once __DIR__ . '/grooflow_asistencia.php';
+    grooflow_asistencia_ensure_schema($pdo);
+
+    $sampleLimit = max(5, min(100, $sampleLimit));
+    $policy = [
+        'sourceOfTruth' => 'buk.pe',
+        'altaSinUsuario' => 'pendiente_notificacion',
+        'cesadoDesactivaAccesoYOrganigrama' => true,
+        'turnosPublica' => 'encargado_sede',
+        'camposOficialesBuk' => ['dni', 'cargo', 'sede_obra', 'activo'],
+        'camposEditablesGrooflow' => ['area_organigrama', 'critico', 'manager'],
+    ];
+
+    $meta = grooflow_kv_get($pdo, 'settings:rrhh');
+    $meta = is_array($meta) ? $meta : [];
+    $kvLinks = is_array($meta['userLinks'] ?? null) ? $meta['userLinks'] : [];
+    $linkedByBuk = [];
+    foreach ($kvLinks as $link) {
+        if (! is_array($link)) {
+            continue;
+        }
+        $bukId = (int) ($link['bukEmployeeId'] ?? 0);
+        $userId = (string) ($link['userId'] ?? '');
+        if ($bukId > 0 && $userId !== '') {
+            $linkedByBuk[$bukId] = $userId;
+        }
+    }
+
+    $empRows = $pdo->query('
+        SELECT buk_id, full_name, document_number, email, personal_email, sede, cargo, area,
+               is_active, is_terminated, linked_usuario_id, status
+        FROM grooflow_buk_empleados
+    ')->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+    $users = grooflow_list_users($pdo);
+    $usersById = [];
+    $usersWithoutDni = [];
+    $activeUserIds = [];
+    foreach ($users as $u) {
+        if (! is_array($u)) {
+            continue;
+        }
+        $uid = (string) ($u['id'] ?? '');
+        if ($uid === '') {
+            continue;
+        }
+        $usersById[$uid] = $u;
+        $status = (string) ($u['status'] ?? 'active');
+        if ($status === 'active') {
+            $activeUserIds[$uid] = true;
+        }
+        $doc = preg_replace('/\D+/', '', (string) ($u['documentNumber'] ?? $u['dni'] ?? '')) ?? '';
+        if ($status === 'active' && $doc === '') {
+            $usersWithoutDni[] = [
+                'userId' => $uid,
+                'name' => trim((string) ($u['name'] ?? '') . ' ' . (string) ($u['lastName'] ?? '')),
+                'email' => (string) ($u['email'] ?? ''),
+            ];
+        }
+    }
+
+    $matched = [];
+    $pendingAccess = [];
+    $terminatedStillActive = [];
+
+    foreach ($empRows as $row) {
+        $bukId = (int) ($row['buk_id'] ?? 0);
+        if ($bukId <= 0) {
+            continue;
+        }
+        $isActive = (int) ($row['is_active'] ?? 0) === 1;
+        $isTerm = (int) ($row['is_terminated'] ?? 0) === 1 || ! $isActive;
+        $linkedId = trim((string) ($row['linked_usuario_id'] ?? ''));
+        if ($linkedId === '' && isset($linkedByBuk[$bukId])) {
+            $linkedId = (string) $linkedByBuk[$bukId];
+        }
+        $item = [
+            'bukId' => $bukId,
+            'fullName' => (string) ($row['full_name'] ?? ''),
+            'documentNumber' => (string) ($row['document_number'] ?? ''),
+            'documentKey' => grooflow_rrhh_doc_key(isset($row['document_number']) ? (string) $row['document_number'] : null),
+            'email' => (string) ($row['email'] ?? $row['personal_email'] ?? ''),
+            'sede' => (string) ($row['sede'] ?? ''),
+            'cargo' => (string) ($row['cargo'] ?? ''),
+            'linkedUsuarioId' => $linkedId !== '' ? $linkedId : null,
+            'identityStatus' => grooflow_rrhh_identity_status([
+                'linked_usuario_id' => $linkedId !== '' ? $linkedId : null,
+                'is_terminated' => $isTerm ? 1 : 0,
+                'document_number' => $row['document_number'] ?? null,
+            ]),
+        ];
+
+        if ($isActive && $linkedId !== '') {
+            $matched[] = $item;
+        } elseif ($isActive && $linkedId === '') {
+            $pendingAccess[] = $item;
+        }
+
+        if ($isTerm && $linkedId !== '' && isset($activeUserIds[$linkedId])) {
+            $u = $usersById[$linkedId] ?? [];
+            $terminatedStillActive[] = array_merge($item, [
+                'userName' => (string) ($u['name'] ?? ''),
+                'userEmail' => (string) ($u['email'] ?? ''),
+                'userStatus' => (string) ($u['status'] ?? ''),
+            ]);
+        }
+    }
+
+    // Asistencia: staff con/sin RUT y cruce vs Buk.pe por DNI
+    $staffInOrg = 0;
+    $staffWithRut = 0;
+    $staffMatchedBuk = 0;
+    $staffWithoutRutCount = 0;
+    $staffWithoutRut = [];
+    $bukDocs = [];
+    foreach ($empRows as $row) {
+        if ((int) ($row['is_active'] ?? 0) !== 1) {
+            continue;
+        }
+        $doc = preg_replace('/\D+/', '', (string) ($row['document_number'] ?? '')) ?? '';
+        if ($doc !== '') {
+            $bukDocs[$doc] = true;
+        }
+    }
+    try {
+        $staffRows = $pdo->query('
+            SELECT id, full_name, rut, sede_name, cargo_label
+            FROM grooflow_asistencia_staff
+        ')->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        foreach ($staffRows as $s) {
+            $staffInOrg++;
+            $rut = preg_replace('/\D+/', '', (string) ($s['rut'] ?? '')) ?? '';
+            if ($rut === '') {
+                $staffWithoutRutCount++;
+                if (count($staffWithoutRut) < $sampleLimit) {
+                    $staffWithoutRut[] = [
+                        'staffId' => (string) ($s['id'] ?? ''),
+                        'fullName' => (string) ($s['full_name'] ?? ''),
+                        'sedeName' => (string) ($s['sede_name'] ?? ''),
+                        'cargoLabel' => (string) ($s['cargo_label'] ?? ''),
+                    ];
+                }
+                continue;
+            }
+            $staffWithRut++;
+            if (isset($bukDocs[$rut])) {
+                $staffMatchedBuk++;
+            }
+        }
+    } catch (Throwable) {
+        /* tabla asistencia aún no disponible */
+    }
+
+    $take = static function (array $rows, int $limit): array {
+        return array_slice($rows, 0, $limit);
+    };
+
+    return [
+        'policy' => $policy,
+        'generatedAt' => date('c'),
+        'pendingAccessAt' => isset($meta['pendingAccessAt']) ? (string) $meta['pendingAccessAt'] : null,
+        'lastTerminationsApply' => is_array($meta['lastTerminationsApply'] ?? null) ? $meta['lastTerminationsApply'] : null,
+        'counts' => [
+            'bukActivos' => count(array_filter($empRows, static fn ($r) => (int) ($r['is_active'] ?? 0) === 1)),
+            'bukTotal' => count($empRows),
+            'matched' => count($matched),
+            'pendingAccess' => count($pendingAccess),
+            'usersWithoutDni' => count($usersWithoutDni),
+            'terminatedStillActive' => count($terminatedStillActive),
+            'staffInOrganigrama' => $staffInOrg,
+            'staffWithRut' => $staffWithRut,
+            'staffMatchedBuk' => $staffMatchedBuk,
+            'staffWithoutRut' => $staffWithoutRutCount,
+        ],
+        'samples' => [
+            'matched' => $take($matched, $sampleLimit),
+            'pendingAccess' => $take($pendingAccess, $sampleLimit),
+            'usersWithoutDni' => $take($usersWithoutDni, $sampleLimit),
+            'terminatedStillActive' => $take($terminatedStillActive, $sampleLimit),
+            'staffWithoutRut' => $take($staffWithoutRut, $sampleLimit),
+        ],
+    ];
 }
 

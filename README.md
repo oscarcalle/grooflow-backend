@@ -28,9 +28,51 @@ Al primer request autenticado, `grooflow_ensure_schema()` crea:
 | `grooflow_asistencia_sede_mappings` | Sede ↔ recinto Buk |
 | `grooflow_asistencia_snapshots` | Historial diario |
 | `grooflow_asistencia_operational` | Contexto alertas |
+| `grooflow_asistencia_buk_records` | Historial marcaciones |
+| `grooflow_buk_empleados` | Maestro RRHH (Buk.pe) |
 
-Claves KV: `settings:asistencia`, `data:asistencia-snapshots`, `data:asistencia-operational`.
+Claves KV: `settings:asistencia`, `settings:rrhh`, `data:asistencia-snapshots`, `data:asistencia-operational`.
 DDL de referencia: `sql/asistencia_schema.sql`.
+
+## Pipelines (Fase 3)
+
+Jobs automatizados sin depender del clic en la UI:
+
+| Pipeline | Fuente | Destino |
+|----------|--------|---------|
+| RRHH | Buk.pe | `grooflow_buk_empleados` + vínculos / bajas |
+| Marcaciones | Ctrlit | `grooflow_asistencia_buk_records` |
+| Enrich usuarios | Ctrlit | `app_usuarios` (no crea altas) |
+| Organigrama (Fase 4) | Buk.pe maestro | `grooflow_asistencia_staff` (preserva área/crítico/manager) |
+
+**HTTP (cron Hostinger / curl):**
+
+```bash
+# Definir en config.php o entorno:
+# define('GROOFLOW_CRON_KEY', 'tu-clave-secreta');
+
+curl -X POST "https://gestionveterinariagroomers.com/grooflow/api/jobs/pipelines" \
+  -H "X-Grooflow-Cron-Key: tu-clave-secreta" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+También acepta sesión admin (`Authorization: Bearer …`).
+
+**CLI:**
+
+```bash
+php grooflow-backend/bin/run-pipelines.php
+# php grooflow-backend/bin/run-pipelines.php --force
+```
+
+Crontab sugerido (cada 15 min; cada pipeline respeta su propio intervalo):
+
+```cron
+*/15 * * * * /usr/bin/php /ruta/grooflow-backend/bin/run-pipelines.php >> /tmp/grooflow-pipelines.log 2>&1
+```
+
+Salud: `GET /rrhh/pipeline-health` (autenticado) o `GET /jobs/pipelines/health` (cron/admin).
 
 ## Producción
 

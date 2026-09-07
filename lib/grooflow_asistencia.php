@@ -122,6 +122,31 @@ function grooflow_asistencia_ensure_schema(PDO $pdo): void
             PRIMARY KEY (id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ");
+
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS grooflow_asistencia_buk_records (
+            merge_key VARCHAR(160) NOT NULL,
+            buk_id BIGINT NULL,
+            trab_id BIGINT NULL,
+            rut_trabajador VARCHAR(40) NULL,
+            dia_entrada VARCHAR(20) NULL,
+            dia_entrada_ymd CHAR(10) NULL,
+            recinto_codigo VARCHAR(80) NULL,
+            nombre_recinto VARCHAR(160) NULL,
+            area VARCHAR(160) NULL,
+            especialidad VARCHAR(160) NULL,
+            entrada DATETIME NULL,
+            salida DATETIME NULL,
+            payload JSON NOT NULL,
+            fetched_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (merge_key),
+            KEY idx_asist_buk_dia_ymd (dia_entrada_ymd),
+            KEY idx_asist_buk_rut_dia (rut_trabajador, dia_entrada_ymd),
+            KEY idx_asist_buk_recinto_dia (recinto_codigo, dia_entrada_ymd),
+            KEY idx_asist_buk_id (buk_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    ");
 }
 
 function grooflow_asistencia_table_count(PDO $pdo, string $table): int
@@ -157,6 +182,8 @@ function grooflow_asistencia_compose_settings(PDO $pdo): array
             'autoRefreshWindowEnd' => '22:00',
             'staffSyncEnabled' => true,
             'staffSyncIntervalMinutes' => 60,
+            'marcacionesPipelineEnabled' => true,
+            'marcacionesPipelineIntervalMinutes' => 30,
         ],
         'requirements' => [],
         'staff' => [],
@@ -620,4 +647,184 @@ function grooflow_asistencia_backfill_role_permissions(PDO $pdo): void
             $upd->execute([grooflow_json_encode($perms), $id]);
         }
     }
+}
+
+/** Clave de merge alineada con el frontend (bukRecordMergeKey). */
+function grooflow_asistencia_buk_merge_key(array $r): string
+{
+    if (isset($r['id']) && $r['id'] !== null && $r['id'] !== '') {
+        return 'id:' . (string) $r['id'];
+    }
+
+    return 'r:' . (string) ($r['trab_id'] ?? '') . ':' . (string) ($r['dia_entrada'] ?? '') . ':' . (string) ($r['rut_trabajador'] ?? '');
+}
+
+/** Normaliza dia_entrada Buk (dd/MM/yyyy) o ISO a Y-m-d. */
+function grooflow_asistencia_buk_dia_ymd(array $r): ?string
+{
+    $dia = trim((string) ($r['dia_entrada'] ?? ''));
+    if ($dia !== '' && preg_match('#^(\d{1,2})/(\d{1,2})/(\d{4})$#', $dia, $m)) {
+        return sprintf('%04d-%02d-%02d', (int) $m[3], (int) $m[2], (int) $m[1]);
+    }
+    if ($dia !== '' && preg_match('#^(\d{4})-(\d{2})-(\d{2})$#', $dia)) {
+        return $dia;
+    }
+    $entrada = trim((string) ($r['entrada'] ?? ''));
+    if ($entrada !== '') {
+        $ts = strtotime($entrada);
+        if ($ts !== false) {
+            return date('Y-m-d', $ts);
+        }
+    }
+
+    return null;
+}
+
+function grooflow_asistencia_buk_parse_dt(?string $raw): ?string
+{
+    $raw = trim((string) $raw);
+    if ($raw === '' || $raw === '-' || strtolower($raw) === 'null') {
+        return null;
+    }
+    $ts = strtotime($raw);
+    if ($ts === false) {
+        return null;
+    }
+
+    return date('Y-m-d H:i:s', $ts);
+}
+
+/**
+ * Upsert por lotes de marcaciones Buk.
+ *
+ * @param list<array<string, mixed>> $records
+ * @return array{upserted: int}
+ */
+function grooflow_asistencia_buk_records_upsert(PDO $pdo, array $records, ?string $fetchedAt = null): array
+{
+    grooflow_asistencia_ensure_schema($pdo);
+    $fetchedAt = $fetchedAt ?: date('Y-m-d H:i:s');
+    $sql = '
+        INSERT INTO grooflow_asistencia_buk_records
+            (merge_key, buk_id, trab_id, rut_trabajador, dia_entrada, dia_entrada_ymd,
+             recinto_codigo, nombre_recinto, area, especialidad, entrada, salida, payload, fetched_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+            buk_id = VALUES(buk_id),
+            trab_id = VALUES(trab_id),
+            rut_trabajador = VALUES(rut_trabajador),
+            dia_entrada = VALUES(dia_entrada),
+            dia_entrada_ymd = VALUES(dia_entrada_ymd),
+            recinto_codigo = VALUES(recinto_codigo),
+            nombre_recinto = VALUES(nombre_recinto),
+            area = VALUES(area),
+            especialidad = VALUES(especialidad),
+            entrada = VALUES(entrada),
+            salida = VALUES(salida),
+            payload = VALUES(payload),
+            fetched_at = VALUES(fetched_at)
+    ';
+    $stmt = $pdo->prepare($sql);
+    $upserted = 0;
+    $pdo->beginTransaction();
+    try {
+        foreach ($records as $r) {
+            if (! is_array($r)) {
+                continue;
+            }
+            $mergeKey = grooflow_asistencia_buk_merge_key($r);
+            if ($mergeKey === 'id:' || $mergeKey === 'r:::') {
+                continue;
+            }
+            $stmt->execute([
+                $mergeKey,
+                isset($r['id']) && is_numeric($r['id']) ? (int) $r['id'] : null,
+                isset($r['trab_id']) && is_numeric($r['trab_id']) ? (int) $r['trab_id'] : null,
+                isset($r['rut_trabajador']) ? (string) $r['rut_trabajador'] : null,
+                isset($r['dia_entrada']) ? (string) $r['dia_entrada'] : null,
+                grooflow_asistencia_buk_dia_ymd($r),
+                isset($r['codigo_recinto']) ? (string) $r['codigo_recinto'] : null,
+                isset($r['nombre_recinto']) ? (string) $r['nombre_recinto'] : null,
+                isset($r['area']) ? (string) $r['area'] : null,
+                isset($r['especialidad']) ? (string) $r['especialidad'] : null,
+                grooflow_asistencia_buk_parse_dt(isset($r['entrada']) ? (string) $r['entrada'] : null),
+                grooflow_asistencia_buk_parse_dt(isset($r['salida']) ? (string) $r['salida'] : null),
+                grooflow_json_encode($r),
+                $fetchedAt,
+            ]);
+            $upserted++;
+        }
+        $pdo->commit();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        throw $e;
+    }
+
+    return ['upserted' => $upserted];
+}
+
+/**
+ * Lista marcaciones por rango de fechas (Y-m-d).
+ *
+ * @return list<array<string, mixed>>
+ */
+function grooflow_asistencia_buk_records_list(
+    PDO $pdo,
+    string $fromYmd,
+    string $toYmd,
+    ?string $recinto = null
+): array {
+    grooflow_asistencia_ensure_schema($pdo);
+    if (! preg_match('#^\d{4}-\d{2}-\d{2}$#', $fromYmd) || ! preg_match('#^\d{4}-\d{2}-\d{2}$#', $toYmd)) {
+        throw new InvalidArgumentException('Fechas from/to inválidas (usa YYYY-MM-DD)');
+    }
+    if ($fromYmd > $toYmd) {
+        [$fromYmd, $toYmd] = [$toYmd, $fromYmd];
+    }
+    $sql = '
+        SELECT payload FROM grooflow_asistencia_buk_records
+        WHERE dia_entrada_ymd IS NOT NULL
+          AND dia_entrada_ymd >= ?
+          AND dia_entrada_ymd <= ?
+    ';
+    $params = [$fromYmd, $toYmd];
+    if ($recinto !== null && trim($recinto) !== '') {
+        $sql .= ' AND recinto_codigo = ?';
+        $params[] = trim($recinto);
+    }
+    $sql .= ' ORDER BY dia_entrada_ymd ASC, merge_key ASC LIMIT 50000';
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    $out = [];
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+        $payload = grooflow_json_decode((string) ($row['payload'] ?? ''));
+        if (is_array($payload)) {
+            $out[] = $payload;
+        }
+    }
+
+    return $out;
+}
+
+/** @return array{days: int, records: int, min_ymd: ?string, max_ymd: ?string} */
+function grooflow_asistencia_buk_records_stats(PDO $pdo): array
+{
+    grooflow_asistencia_ensure_schema($pdo);
+    $row = $pdo->query('
+        SELECT COUNT(*) AS records,
+               COUNT(DISTINCT dia_entrada_ymd) AS days,
+               MIN(dia_entrada_ymd) AS min_ymd,
+               MAX(dia_entrada_ymd) AS max_ymd
+        FROM grooflow_asistencia_buk_records
+        WHERE dia_entrada_ymd IS NOT NULL
+    ')->fetch(PDO::FETCH_ASSOC) ?: [];
+
+    return [
+        'days' => (int) ($row['days'] ?? 0),
+        'records' => (int) ($row['records'] ?? 0),
+        'min_ymd' => isset($row['min_ymd']) ? (string) $row['min_ymd'] : null,
+        'max_ymd' => isset($row['max_ymd']) ? (string) $row['max_ymd'] : null,
+    ];
 }

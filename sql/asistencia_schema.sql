@@ -98,7 +98,32 @@ CREATE TABLE IF NOT EXISTS grooflow_asistencia_operational (
   PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Historial completo de marcaciones Buk (sin TTL).
+CREATE TABLE IF NOT EXISTS grooflow_asistencia_buk_records (
+  merge_key VARCHAR(160) NOT NULL,
+  buk_id BIGINT NULL,
+  trab_id BIGINT NULL,
+  rut_trabajador VARCHAR(40) NULL,
+  dia_entrada VARCHAR(20) NULL,
+  dia_entrada_ymd CHAR(10) NULL,
+  recinto_codigo VARCHAR(80) NULL,
+  nombre_recinto VARCHAR(160) NULL,
+  area VARCHAR(160) NULL,
+  especialidad VARCHAR(160) NULL,
+  entrada DATETIME NULL,
+  salida DATETIME NULL,
+  payload JSON NOT NULL,
+  fetched_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (merge_key),
+  KEY idx_asist_buk_dia_ymd (dia_entrada_ymd),
+  KEY idx_asist_buk_rut_dia (rut_trabajador, dia_entrada_ymd),
+  KEY idx_asist_buk_recinto_dia (recinto_codigo, dia_entrada_ymd),
+  KEY idx_asist_buk_id (buk_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- KV keys asociadas:
 --   settings:asistencia          → meta + staff + requirements + profiles + mappings
 --   data:asistencia-snapshots     → snapshots
 --   data:asistencia-operational   → operational
+--   grooflow_asistencia_buk_records → historial completo marcaciones Buk

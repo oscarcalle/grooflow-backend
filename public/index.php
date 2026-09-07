@@ -22,6 +22,7 @@ require_once dirname(__DIR__) . '/lib/grooflow_menu.php';
 require_once dirname(__DIR__) . '/lib/grooflow_usuario_menu.php';
 require_once dirname(__DIR__) . '/lib/grooflow_rrhh.php';
 require_once dirname(__DIR__) . '/lib/grooflow_lists.php';
+require_once dirname(__DIR__) . '/lib/grooflow_pipelines.php';
 
 unset($_GET['token']);
 
@@ -129,6 +130,51 @@ function grooflow_dispatch(PDO $pdo): void
             auth_api_logout($pdo, $token);
         }
         api_json_response(['ok' => true]);
+
+        return;
+    }
+
+    // Jobs programados (Fase 3): clave cron O sesión admin — antes de auth obligatoria.
+    if ($path === '/jobs/pipelines' && $method === 'POST') {
+        $data = api_request_json();
+        $bodyKey = trim((string) ($data['cronKey'] ?? $data['cron_key'] ?? $data['key'] ?? ''));
+        $authVia = grooflow_assert_cron_or_admin($pdo, $bodyKey !== '' ? $bodyKey : null);
+        $result = grooflow_pipelines_run($pdo, [
+            'force' => ! empty($data['force']),
+            'forceRrhh' => ! empty($data['forceRrhh']),
+            'forceMarcaciones' => ! empty($data['forceMarcaciones']),
+            'forceAsistenciaProject' => ! empty($data['forceAsistenciaProject']),
+            'skipRrhh' => ! empty($data['skipRrhh']),
+            'skipMarcaciones' => ! empty($data['skipMarcaciones']),
+            'skipUsuariosEnrich' => ! empty($data['skipUsuariosEnrich']),
+            'skipAsistenciaProject' => ! empty($data['skipAsistenciaProject']),
+        ]);
+        api_json_response([
+            'ok' => true,
+            'authVia' => $authVia,
+            'pipelineOk' => ! empty($result['ok']),
+            'ran_at' => $result['ran_at'] ?? null,
+            'duration_ms' => $result['duration_ms'] ?? null,
+            'steps' => $result['steps'] ?? null,
+            'health' => $result['health'] ?? null,
+            'policy' => $result['policy'] ?? null,
+        ]);
+
+        return;
+    }
+
+    if ($path === '/jobs/pipelines/health' && $method === 'GET') {
+        grooflow_assert_cron_or_admin($pdo);
+        $health = grooflow_pipelines_health($pdo);
+        api_json_response([
+            'ok' => true,
+            'pipelineOk' => ! empty($health['ok']),
+            'summary' => $health['summary'] ?? '',
+            'issues' => $health['issues'] ?? [],
+            'rrhh' => $health['rrhh'] ?? null,
+            'marcaciones' => $health['marcaciones'] ?? null,
+            'generatedAt' => $health['generatedAt'] ?? date('c'),
+        ]);
 
         return;
     }
@@ -432,6 +478,47 @@ function grooflow_dispatch(PDO $pdo): void
         return;
     }
 
+    if ($path === '/asistencia/buk-records/upsert' && $method === 'POST') {
+        require_once dirname(__DIR__) . '/lib/grooflow_asistencia.php';
+        $data = api_request_json();
+        $records = $data['records'] ?? [];
+        if (! is_array($records)) {
+            throw new InvalidArgumentException('records debe ser un arreglo');
+        }
+        $fetchedAt = isset($data['fetchedAt']) ? (string) $data['fetchedAt'] : null;
+        $result = grooflow_asistencia_buk_records_upsert($pdo, $records, $fetchedAt);
+        api_json_response(['ok' => true, ...$result]);
+
+        return;
+    }
+
+    if ($path === '/asistencia/buk-records' && $method === 'GET') {
+        require_once dirname(__DIR__) . '/lib/grooflow_asistencia.php';
+        $from = (string) ($_GET['from'] ?? '');
+        $to = (string) ($_GET['to'] ?? '');
+        $recinto = isset($_GET['recinto']) ? (string) $_GET['recinto'] : null;
+        if ($from === '' || $to === '') {
+            throw new InvalidArgumentException('Parámetros from y to son obligatorios (YYYY-MM-DD)');
+        }
+        $records = grooflow_asistencia_buk_records_list($pdo, $from, $to, $recinto);
+        api_json_response([
+            'ok' => true,
+            'from' => $from,
+            'to' => $to,
+            'count' => count($records),
+            'data' => $records,
+        ]);
+
+        return;
+    }
+
+    if ($path === '/asistencia/buk-records/stats' && $method === 'GET') {
+        require_once dirname(__DIR__) . '/lib/grooflow_asistencia.php';
+        api_json_response(['ok' => true, ...grooflow_asistencia_buk_records_stats($pdo)]);
+
+        return;
+    }
+
     if (preg_match('#^/kv/(.+)$#', $path, $m)) {
         $key = grooflow_normalize_kv_key($m[1]);
         if ($method === 'GET') {
@@ -520,6 +607,66 @@ function grooflow_dispatch(PDO $pdo): void
     if ($path === '/rrhh/stats' && $method === 'GET') {
         grooflow_rrhh_ensure_schema($pdo);
         api_json_response(['ok' => true, 'stats' => grooflow_rrhh_stats($pdo)]);
+
+        return;
+    }
+
+    if ($path === '/rrhh/identity-diagnosis' && $method === 'GET') {
+        grooflow_rrhh_ensure_schema($pdo);
+        $limit = (int) ($_GET['limit'] ?? 40);
+        api_json_response(['ok' => true, ...grooflow_rrhh_identity_diagnosis($pdo, $limit)]);
+
+        return;
+    }
+
+    if ($path === '/rrhh/pipeline-health' && $method === 'GET') {
+        $health = grooflow_pipelines_health($pdo);
+        api_json_response([
+            'ok' => true,
+            'pipelineOk' => ! empty($health['ok']),
+            'summary' => $health['summary'] ?? '',
+            'issues' => $health['issues'] ?? [],
+            'rrhh' => $health['rrhh'] ?? null,
+            'marcaciones' => $health['marcaciones'] ?? null,
+            'generatedAt' => $health['generatedAt'] ?? date('c'),
+        ]);
+
+        return;
+    }
+
+    if ($path === '/rrhh/apply-terminations' && $method === 'POST') {
+        grooflow_assert_admin($pdo);
+        $data = api_request_json();
+        $result = grooflow_rrhh_apply_terminations($pdo, [
+            'dryRun' => ! empty($data['dryRun']),
+            'bukIds' => is_array($data['bukIds'] ?? null) ? $data['bukIds'] : null,
+        ]);
+        api_json_response(['ok' => true, ...$result]);
+
+        return;
+    }
+
+    if ($path === '/rrhh/link-user' && $method === 'POST') {
+        grooflow_assert_admin($pdo);
+        $data = api_request_json();
+        $bukId = (int) ($data['bukId'] ?? $data['bukEmployeeId'] ?? 0);
+        $userId = trim((string) ($data['userId'] ?? ''));
+        $methodLink = trim((string) ($data['matchMethod'] ?? $data['method'] ?? 'manual'));
+        $result = grooflow_rrhh_link_user($pdo, $bukId, $userId, $methodLink !== '' ? $methodLink : 'manual');
+        api_json_response(['ok' => true, ...$result]);
+
+        return;
+    }
+
+    if ($path === '/rrhh/project-asistencia-staff' && $method === 'POST') {
+        grooflow_assert_admin($pdo);
+        $data = api_request_json();
+        $onlySedes = is_array($data['onlySedes'] ?? null) ? $data['onlySedes'] : null;
+        $result = grooflow_rrhh_project_asistencia_staff($pdo, [
+            'pruneInactive' => ($data['pruneInactive'] ?? true) !== false,
+            'onlySedes' => $onlySedes,
+        ]);
+        api_json_response(['ok' => true, ...$result]);
 
         return;
     }

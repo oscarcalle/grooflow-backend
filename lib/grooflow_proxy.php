@@ -351,7 +351,7 @@ function grooflow_handle_buk(PDO $pdo, string $action, array $data): array
     $apiToken = grooflow_resolve_buk_api_token($pdo, (string) ($data['apiToken'] ?? $data['token'] ?? ''));
     $page = max(1, (int) ($data['page'] ?? 1));
     $pageSize = max(1, min(200, (int) ($data['pageSize'] ?? $data['perPage'] ?? 100)));
-    $maxPages = max(1, min(50, (int) ($data['maxPages'] ?? 15)));
+    $maxPages = max(1, min(100, (int) ($data['maxPages'] ?? 50)));
     $started = (int) round(microtime(true) * 1000);
 
     if ($action === 'test') {
@@ -455,7 +455,8 @@ function grooflow_handle_buk(PDO $pdo, string $action, array $data): array
         ];
     }
     $all = array_merge($all, $first['records']);
-    $totalPages = min($first['totalPages'], $maxPages);
+    $reportedTotalPages = max(1, (int) $first['totalPages']);
+    $totalPages = min($reportedTotalPages, $maxPages);
     for ($p = 2; $p <= $totalPages; $p++) {
         $next = grooflow_buk_fetch_page($baseUrl, $apiToken, $p, $pageSize, 120);
         if ($next['status'] < 200 || $next['status'] >= 300) {
@@ -470,6 +471,8 @@ function grooflow_handle_buk(PDO $pdo, string $action, array $data): array
         'status' => $first['status'],
         'data' => $all,
         'totalPages' => $totalPages,
+        'reportedTotalPages' => $reportedTotalPages,
+        'truncated' => $reportedTotalPages > $maxPages,
         'triedUrl' => $first['triedUrl'],
         'durationMs' => $duration,
     ];

@@ -220,6 +220,7 @@ function grooflow_kv_bootstrap_keys(): array
         'settings:config',
         'settings:system',
         'settings:asistencia',
+        'settings:rrhh',
         'settings:turnos',
         'settings:accidentes-trabajo',
         'settings:entrega-uniformes',
