@@ -1555,6 +1555,7 @@ function grooflow_rrhh_guess_asistencia_area(?string $area, ?string $cargo): str
 
 /**
  * Resuelve sede GrooFlow desde sede/recinto Buk usando mappings/perfiles.
+ * Si el valor Buk es solo un código numérico (01, 03…), no lo usa como etiqueta.
  *
  * @param array<string, mixed> $emp
  * @param array<string, mixed> $settings
@@ -1570,6 +1571,9 @@ function grooflow_rrhh_resolve_asistencia_sede(array $emp, array $settings): str
     $norm = static function (string $s): string {
         return mb_strtolower(trim($s));
     };
+    $isCode = static function (string $s): bool {
+        return $s !== '' && (bool) preg_match('/^\d{1,6}$/', $s);
+    };
 
     foreach ($mappings as $m) {
         if (! is_array($m)) {
@@ -1577,10 +1581,13 @@ function grooflow_rrhh_resolve_asistencia_sede(array $emp, array $settings): str
         }
         $code = trim((string) ($m['bukRecintoCode'] ?? ''));
         $name = trim((string) ($m['sedeName'] ?? ''));
-        if ($name === '') {
+        if ($name === '' || $isCode($name)) {
             continue;
         }
         if ($recintoCode !== '' && $code !== '' && strcasecmp($code, $recintoCode) === 0) {
+            return $name;
+        }
+        if ($sede !== '' && $code !== '' && strcasecmp($code, $sede) === 0) {
             return $name;
         }
     }
@@ -1591,10 +1598,13 @@ function grooflow_rrhh_resolve_asistencia_sede(array $emp, array $settings): str
         }
         $code = trim((string) ($p['bukRecintoCode'] ?? ''));
         $name = trim((string) ($p['sedeName'] ?? ''));
-        if ($name === '') {
+        if ($name === '' || $isCode($name)) {
             continue;
         }
         if ($recintoCode !== '' && $code !== '' && strcasecmp($code, $recintoCode) === 0) {
+            return $name;
+        }
+        if ($sede !== '' && $code !== '' && strcasecmp($code, $sede) === 0) {
             return $name;
         }
     }
@@ -1613,8 +1623,11 @@ function grooflow_rrhh_resolve_asistencia_sede(array $emp, array $settings): str
     $candidates = array_values(array_unique($candidates));
 
     foreach ($candidates as $name) {
+        if ($isCode($name)) {
+            continue;
+        }
         $nn = $norm($name);
-        if ($sede !== '' && (str_contains($nn, $norm($sede)) || str_contains($norm($sede), $nn))) {
+        if ($sede !== '' && ! $isCode($sede) && (str_contains($nn, $norm($sede)) || str_contains($norm($sede), $nn))) {
             return $name;
         }
         if ($recintoName !== '' && (str_contains($nn, $norm($recintoName)) || str_contains($norm($recintoName), $nn))) {
@@ -1622,14 +1635,21 @@ function grooflow_rrhh_resolve_asistencia_sede(array $emp, array $settings): str
         }
     }
 
-    if ($sede !== '') {
+    if ($sede !== '' && ! $isCode($sede)) {
         return $sede;
     }
+    if ($recintoName !== '' && ! $isCode($recintoName)) {
+        return $recintoName;
+    }
     if ($candidates !== []) {
-        return $candidates[0];
+        foreach ($candidates as $name) {
+            if (! $isCode($name)) {
+                return $name;
+            }
+        }
     }
 
-    return 'Principal';
+    return '';
 }
 
 /**
@@ -1643,6 +1663,9 @@ function grooflow_rrhh_project_asistencia_staff(PDO $pdo, array $options = []): 
 {
     grooflow_rrhh_ensure_schema($pdo);
     grooflow_asistencia_ensure_schema($pdo);
+    if (! function_exists('auth_user_sedes_assigned')) {
+        require_once (defined('CRON_ROOT') ? CRON_ROOT : dirname(__DIR__, 2)) . '/backend/lib/auth_api.php';
+    }
 
     $settings = grooflow_asistencia_get_settings($pdo);
     $settings = is_array($settings) ? $settings : [
@@ -1717,12 +1740,25 @@ function grooflow_rrhh_project_asistencia_staff(PDO $pdo, array $options = []): 
         $activeBukIds[$bukId] = true;
         $doc = grooflow_rrhh_doc_key(isset($emp['document_number']) ? (string) $emp['document_number'] : null);
         $sedeName = grooflow_rrhh_resolve_asistencia_sede($emp, $settings);
+        $linkedId = trim((string) ($emp['linked_usuario_id'] ?? ''));
+        // Preferir sedes de Gestión cuando hay vínculo (evita códigos Buk 01/03/04).
+        if ($linkedId !== '' && function_exists('auth_user_sedes_assigned')) {
+            $assigned = auth_user_sedes_assigned($pdo, (int) $linkedId);
+            if ($assigned !== []) {
+                $fromGestion = trim((string) ($assigned[0]['nombre'] ?? ''));
+                if ($fromGestion !== '' && ! preg_match('/^\d{1,6}$/', $fromGestion)) {
+                    $sedeName = $fromGestion;
+                }
+            }
+        }
+        if ($sedeName === '') {
+            $sedeName = 'Sin sede';
+        }
         if ($onlySedes !== [] && ! isset($onlySedes[mb_strtolower($sedeName)])) {
             $skipped++;
             continue;
         }
 
-        $linkedId = trim((string) ($emp['linked_usuario_id'] ?? ''));
         $idx = null;
         if (isset($byBuk[$bukId])) {
             $idx = $byBuk[$bukId];

@@ -11,6 +11,8 @@ declare(strict_types=1);
  * El blob KV se mantiene por compatibilidad; las tablas son la fuente relacional.
  */
 
+require_once __DIR__ . '/grooflow_schema.php';
+
 function grooflow_asistencia_ensure_schema(PDO $pdo): void
 {
     $pdo->exec("

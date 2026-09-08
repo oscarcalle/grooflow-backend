@@ -5,6 +5,9 @@ declare(strict_types=1);
 if (! function_exists('usuarios_create')) {
     require_once (defined('CRON_ROOT') ? CRON_ROOT : dirname(__DIR__, 2)) . '/backend/lib/usuarios_api.php';
 }
+if (! function_exists('auth_user_sedes_assigned')) {
+    require_once (defined('CRON_ROOT') ? CRON_ROOT : dirname(__DIR__, 2)) . '/backend/lib/auth_api.php';
+}
 
 function grooflow_default_role_for_nivel(int $nivelId): string
 {

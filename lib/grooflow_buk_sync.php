@@ -33,6 +33,153 @@ function grooflow_buk_normalize_dni(string $raw): string
     return preg_replace('/\D+/', '', trim($raw)) ?? '';
 }
 
+function grooflow_buk_normalize_email(string $raw): string
+{
+    return strtolower(trim($raw));
+}
+
+/**
+ * Actualiza app_usuarios desde grooflow_buk_empleados.
+ * Matching: linked_usuario_id, luego email (email / personal_email ↔ username / email).
+ * Mapeo: document_number→identificacion, cargo→puesto, turno/turno_horario→turno/turno_horario.
+ *
+ * @return array{matched:int,updated:int,empleados:int,skipped:int}
+ */
+function grooflow_buk_sync_usuarios_from_empleados(PDO $pdo, string $syncedAt): array
+{
+    if (! table_exists($pdo, 'grooflow_buk_empleados')) {
+        return ['matched' => 0, 'updated' => 0, 'empleados' => 0, 'skipped' => 0];
+    }
+
+    $empleados = $pdo->query("
+        SELECT buk_id, document_number, email, personal_email, cargo, turno, turno_horario,
+               turno_codigo, area, especialidad, linked_usuario_id
+        FROM grooflow_buk_empleados
+        WHERE is_active = 1 AND missing_from_source = 0
+    ")->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+    if ($empleados === []) {
+        return ['matched' => 0, 'updated' => 0, 'empleados' => 0, 'skipped' => 0];
+    }
+
+    $users = $pdo->query("
+        SELECT id, username, email, identificacion, buk_dni, puesto, turno, turno_horario, turno_codigo, area
+        FROM app_usuarios
+        WHERE is_deleted = 0
+    ")->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+    /** @var array<int, array<string, mixed>> */
+    $usersById = [];
+    /** @var array<string, list<array<string, mixed>>> */
+    $usersByEmail = [];
+    foreach ($users as $u) {
+        $uid = (int) ($u['id'] ?? 0);
+        if ($uid > 0) {
+            $usersById[$uid] = $u;
+        }
+        foreach ([(string) ($u['email'] ?? ''), (string) ($u['username'] ?? '')] as $rawEmail) {
+            $email = grooflow_buk_normalize_email($rawEmail);
+            if ($email === '' || ! str_contains($email, '@')) {
+                continue;
+            }
+            $usersByEmail[$email][] = $u;
+        }
+    }
+
+    $upd = $pdo->prepare('
+        UPDATE app_usuarios SET
+            identificacion = COALESCE(NULLIF(?, ""), identificacion),
+            puesto = COALESCE(NULLIF(?, ""), puesto),
+            turno = COALESCE(NULLIF(?, ""), turno),
+            turno_horario = COALESCE(NULLIF(?, ""), turno_horario),
+            turno_codigo = COALESCE(NULLIF(?, ""), turno_codigo),
+            area = COALESCE(NULLIF(?, ""), area),
+            buk_dni = COALESCE(NULLIF(?, ""), buk_dni),
+            buk_synced_at = ?
+        WHERE id = ?
+    ');
+
+    $matched = 0;
+    $updated = 0;
+    $skipped = 0;
+    $seenUserIds = [];
+
+    foreach ($empleados as $emp) {
+        $matches = [];
+        $linkedId = (int) ($emp['linked_usuario_id'] ?? 0);
+        if ($linkedId > 0 && isset($usersById[$linkedId])) {
+            $matches[] = $usersById[$linkedId];
+        } else {
+            $seenEmails = [];
+            foreach ([(string) ($emp['email'] ?? ''), (string) ($emp['personal_email'] ?? '')] as $rawEmail) {
+                $email = grooflow_buk_normalize_email($rawEmail);
+                if ($email === '' || isset($seenEmails[$email]) || ! isset($usersByEmail[$email])) {
+                    continue;
+                }
+                $seenEmails[$email] = true;
+                foreach ($usersByEmail[$email] as $u) {
+                    $matches[] = $u;
+                }
+            }
+        }
+
+        if ($matches === []) {
+            $skipped++;
+            continue;
+        }
+
+        $doc = grooflow_buk_normalize_dni((string) ($emp['document_number'] ?? ''));
+        $puesto = trim((string) ($emp['cargo'] ?? ''));
+        if ($puesto === '') {
+            $puesto = trim((string) ($emp['especialidad'] ?? ''));
+        }
+        $turno = trim((string) ($emp['turno'] ?? ''));
+        $turnoHorario = trim((string) ($emp['turno_horario'] ?? ''));
+        $turnoCodigo = trim((string) ($emp['turno_codigo'] ?? ''));
+        $area = trim((string) ($emp['area'] ?? ''));
+
+        foreach ($matches as $user) {
+            $id = (int) $user['id'];
+            if ($id <= 0 || isset($seenUserIds[$id])) {
+                continue;
+            }
+            $seenUserIds[$id] = true;
+            $matched++;
+
+            $changed =
+                ($doc !== '' && grooflow_buk_normalize_dni((string) ($user['identificacion'] ?? '')) !== $doc)
+                || ($puesto !== '' && trim((string) ($user['puesto'] ?? '')) !== $puesto)
+                || ($turno !== '' && trim((string) ($user['turno'] ?? '')) !== $turno)
+                || ($turnoHorario !== '' && trim((string) ($user['turno_horario'] ?? '')) !== $turnoHorario)
+                || ($turnoCodigo !== '' && trim((string) ($user['turno_codigo'] ?? '')) !== $turnoCodigo)
+                || ($area !== '' && trim((string) ($user['area'] ?? '')) !== $area)
+                || ($doc !== '' && grooflow_buk_normalize_dni((string) ($user['buk_dni'] ?? '')) !== $doc);
+
+            $upd->execute([
+                $doc,
+                $puesto,
+                $turno,
+                $turnoHorario,
+                $turnoCodigo,
+                $area,
+                $doc,
+                $syncedAt,
+                $id,
+            ]);
+            if ($changed || $upd->rowCount() > 0) {
+                $updated++;
+            }
+        }
+    }
+
+    return [
+        'matched' => $matched,
+        'updated' => $updated,
+        'empleados' => count($empleados),
+        'skipped' => $skipped,
+    ];
+}
+
 /** @return array{status:int,json:mixed,body:string,url:string} */
 function grooflow_buk_http_get(string $url, string $apiToken, bool $tokenInQuery = false, int $timeoutSec = 90): array
 {
@@ -295,7 +442,7 @@ function grooflow_buk_sync_usuarios(PDO $pdo, array $options = []): array
     $nomina = [];
     $asistencia = [];
     $turnos = [];
-    $bySource = ['nomina' => 0, 'asistencia' => 0, 'turnos' => 0];
+    $bySource = ['nomina' => 0, 'asistencia' => 0, 'turnos' => 0, 'empleados' => 0];
 
     try {
         $nomina = grooflow_buk_fetch_nomina_all($apiRoot, $apiToken);
@@ -316,43 +463,40 @@ function grooflow_buk_sync_usuarios(PDO $pdo, array $options = []): array
         $errors[] = $e->getMessage();
     }
 
-    if ($nomina === [] && $asistencia === [] && $turnos === []) {
-        throw new RuntimeException(
-            'No se pudo obtener datos de Buk (' . implode('; ', $errors ?: ['sin detalle']) . ')'
-        );
-    }
-
-    $merged = grooflow_buk_merge_staff_by_dni($nomina, $asistencia, $turnos);
-    if ($onlyVinculados) {
-        $liveDnis = [];
-        foreach ($asistencia as $a) {
-            if (! is_array($a)) {
-                continue;
+    $merged = [];
+    if ($nomina !== [] || $asistencia !== [] || $turnos !== []) {
+        $merged = grooflow_buk_merge_staff_by_dni($nomina, $asistencia, $turnos);
+        if ($onlyVinculados) {
+            $liveDnis = [];
+            foreach ($asistencia as $a) {
+                if (! is_array($a)) {
+                    continue;
+                }
+                $d = grooflow_buk_normalize_dni((string) ($a['rut_trabajador'] ?? ''));
+                if ($d !== '') {
+                    $liveDnis[$d] = true;
+                }
             }
-            $d = grooflow_buk_normalize_dni((string) ($a['rut_trabajador'] ?? ''));
-            if ($d !== '') {
-                $liveDnis[$d] = true;
+            foreach ($turnos as $t) {
+                if (! is_array($t)) {
+                    continue;
+                }
+                $d = grooflow_buk_normalize_dni((string) ($t['dni'] ?? ''));
+                if ($d !== '') {
+                    $liveDnis[$d] = true;
+                }
             }
-        }
-        foreach ($turnos as $t) {
-            if (! is_array($t)) {
-                continue;
-            }
-            $d = grooflow_buk_normalize_dni((string) ($t['dni'] ?? ''));
-            if ($d !== '') {
-                $liveDnis[$d] = true;
-            }
-        }
-        foreach ($merged as $dni => $row) {
-            $estado = strtolower(trim((string) ($row['estado_buk'] ?? '')));
-            if ($estado !== '' && $estado !== 'vinculado' && ! isset($liveDnis[$dni])) {
-                unset($merged[$dni]);
+            foreach ($merged as $dni => $row) {
+                $estado = strtolower(trim((string) ($row['estado_buk'] ?? '')));
+                if ($estado !== '' && $estado !== 'vinculado' && ! isset($liveDnis[$dni])) {
+                    unset($merged[$dni]);
+                }
             }
         }
     }
 
     $users = $pdo->query("
-        SELECT id, identificacion, buk_dni, area, puesto, turno, turno_horario, turno_codigo,
+        SELECT id, username, email, identificacion, buk_dni, area, puesto, turno, turno_horario, turno_codigo,
                especialidad, contrato, nombre, apellido
         FROM app_usuarios
         WHERE is_deleted = 0
@@ -455,17 +599,33 @@ function grooflow_buk_sync_usuarios(PDO $pdo, array $options = []): array
         }
     }
 
+    // Fuente principal cuando falta DNI en panel: grooflow_buk_empleados (match por email).
+    $fromEmpleados = grooflow_buk_sync_usuarios_from_empleados($pdo, $syncedAt);
+    $bySource['empleados'] = (int) ($fromEmpleados['empleados'] ?? 0);
+    $matched += (int) ($fromEmpleados['matched'] ?? 0);
+    $updated += (int) ($fromEmpleados['updated'] ?? 0);
+    $skipped += (int) ($fromEmpleados['skipped'] ?? 0);
+
+    if ($merged === [] && (int) ($fromEmpleados['matched'] ?? 0) === 0 && (int) ($fromEmpleados['empleados'] ?? 0) === 0) {
+        throw new RuntimeException(
+            'No se pudo obtener datos de Buk ni de grooflow_buk_empleados ('
+            . implode('; ', $errors ?: ['sin detalle']) . ')'
+        );
+    }
+
     // Persistir meta de sync (intervalo / última ejecución) en settings Buk.
     $buk['lastStaffSyncAt'] = date('c');
     $buk['lastStaffSyncOk'] = true;
     $buk['lastStaffSyncMessage'] = sprintf(
-        'Actualizados %d usuario(s); coincidencias %d; sin match en panel %d. Nómina %d · asistencia %d · turnos %d.',
+        'Actualizados %d usuario(s); coincidencias %d; sin match en panel %d. Nómina %d · asistencia %d · turnos %d · empleados RRHH %d (email %d).',
         $updated,
         $matched,
         $unmatchedBuk,
         $bySource['nomina'],
         $bySource['asistencia'],
-        $bySource['turnos']
+        $bySource['turnos'],
+        $bySource['empleados'],
+        (int) ($fromEmpleados['matched'] ?? 0)
     );
     if (! isset($buk['staffSyncIntervalMinutes']) || (int) $buk['staffSyncIntervalMinutes'] <= 0) {
         $buk['staffSyncIntervalMinutes'] = 60;
@@ -484,6 +644,7 @@ function grooflow_buk_sync_usuarios(PDO $pdo, array $options = []): array
         'unmatched_buk' => $unmatchedBuk,
         'users_scanned' => count($users),
         'by_source' => $bySource,
+        'from_empleados' => $fromEmpleados,
         'errors' => $errors,
         'duration_ms' => (int) round(microtime(true) * 1000) - $started,
         'synced_at' => $syncedAt,
