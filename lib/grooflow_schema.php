@@ -46,6 +46,8 @@ function grooflow_kv_array_tables(): array
         'data:requisitions' => 'grooflow_requisiciones',
         'data:products' => 'grooflow_productos',
         'data:feeReceipts' => 'grooflow_honorarios',
+        'data:fleet' => 'grooflow_flota',
+        'data:inventory' => 'grooflow_inventario',
     ];
 }
 
