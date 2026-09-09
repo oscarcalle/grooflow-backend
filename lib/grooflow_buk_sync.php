@@ -43,6 +43,8 @@ function grooflow_buk_normalize_email(string $raw): string
  * Matching: linked_usuario_id → DNI (document_number ↔ identificacion / buk_dni)
  * → solo si el DNI Buk está ausente, email (email / personal_email ↔ username / email).
  * Mapeo: document_number→identificacion, cargo→puesto, turno/turno_horario→turno/turno_horario.
+ * Incluye inactivos/bajas (p. ej. reingreso en panel con mismo DNI); prioriza activos.
+ * No pisa app_usuarios.area (área canónica del panel ≠ familia de cargo Buk).
  *
  * @return array{matched:int,updated:int,empleados:int,skipped:int,by_dni:int,by_email:int}
  */
@@ -52,11 +54,14 @@ function grooflow_buk_sync_usuarios_from_empleados(PDO $pdo, string $syncedAt): 
         return ['matched' => 0, 'updated' => 0, 'empleados' => 0, 'skipped' => 0, 'by_dni' => 0, 'by_email' => 0];
     }
 
+    // Incluir inactivos: el panel puede tener usuarios activos con DNI de un historial Buk.
+    // Orden: activos primero, luego no terminados, luego más recientes.
     $empleados = $pdo->query("
         SELECT buk_id, document_number, email, personal_email, cargo, turno, turno_horario,
-               turno_codigo, area, especialidad, linked_usuario_id
+               turno_codigo, especialidad, linked_usuario_id, is_active, is_terminated
         FROM grooflow_buk_empleados
-        WHERE is_active = 1 AND missing_from_source = 0
+        WHERE missing_from_source = 0
+        ORDER BY is_active DESC, is_terminated ASC, last_updated_at DESC, buk_id DESC
     ")->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
     if ($empleados === []) {
@@ -64,7 +69,7 @@ function grooflow_buk_sync_usuarios_from_empleados(PDO $pdo, string $syncedAt): 
     }
 
     $users = $pdo->query("
-        SELECT id, username, email, identificacion, buk_dni, puesto, turno, turno_horario, turno_codigo, area
+        SELECT id, username, email, identificacion, buk_dni, puesto, turno, turno_horario, turno_codigo
         FROM app_usuarios
         WHERE is_deleted = 0
     ")->fetchAll(PDO::FETCH_ASSOC) ?: [];
@@ -107,7 +112,6 @@ function grooflow_buk_sync_usuarios_from_empleados(PDO $pdo, string $syncedAt): 
             turno = COALESCE(NULLIF(?, ""), turno),
             turno_horario = COALESCE(NULLIF(?, ""), turno_horario),
             turno_codigo = COALESCE(NULLIF(?, ""), turno_codigo),
-            area = COALESCE(NULLIF(?, ""), area),
             buk_dni = COALESCE(NULLIF(?, ""), buk_dni),
             buk_synced_at = ?
         WHERE id = ?
@@ -118,6 +122,7 @@ function grooflow_buk_sync_usuarios_from_empleados(PDO $pdo, string $syncedAt): 
     $skipped = 0;
     $byDni = 0;
     $byEmail = 0;
+    /** @var array<int, true> primera coincidencia (conteo matched); huecos se pueden rellenar después */
     $seenUserIds = [];
 
     foreach ($empleados as $emp) {
@@ -155,6 +160,7 @@ function grooflow_buk_sync_usuarios_from_empleados(PDO $pdo, string $syncedAt): 
             continue;
         }
 
+        // Puesto = cargo Buk (fallback especialidad).
         $puesto = trim((string) ($emp['cargo'] ?? ''));
         if ($puesto === '') {
             $puesto = trim((string) ($emp['especialidad'] ?? ''));
@@ -162,29 +168,42 @@ function grooflow_buk_sync_usuarios_from_empleados(PDO $pdo, string $syncedAt): 
         $turno = trim((string) ($emp['turno'] ?? ''));
         $turnoHorario = trim((string) ($emp['turno_horario'] ?? ''));
         $turnoCodigo = trim((string) ($emp['turno_codigo'] ?? ''));
-        $area = trim((string) ($emp['area'] ?? ''));
 
-        foreach ($matches as $user) {
-            $id = (int) $user['id'];
-            if ($id <= 0 || isset($seenUserIds[$id])) {
+        // Sin datos útiles para el panel: no cuenta como match productivo.
+        if ($doc === '' && $puesto === '' && $turno === '' && $turnoHorario === '' && $turnoCodigo === '') {
+            continue;
+        }
+
+        foreach ($matches as $matchUser) {
+            $id = (int) ($matchUser['id'] ?? 0);
+            if ($id <= 0) {
                 continue;
             }
-            $seenUserIds[$id] = true;
-            $matched++;
-            if ($matchVia === 'dni') {
-                $byDni++;
-            } elseif ($matchVia === 'email') {
-                $byEmail++;
+            $user = $usersById[$id] ?? $matchUser;
+
+            $isFirst = ! isset($seenUserIds[$id]);
+            if ($isFirst) {
+                $seenUserIds[$id] = true;
+                $matched++;
+                if ($matchVia === 'dni') {
+                    $byDni++;
+                } elseif ($matchVia === 'email') {
+                    $byEmail++;
+                }
             }
 
-            $changed =
+            // Solo actuar si hay algo nuevo que rellenar / alinear (COALESCE no pisa valores ya llenos).
+            $needs =
                 ($doc !== '' && grooflow_buk_normalize_dni((string) ($user['identificacion'] ?? '')) !== $doc)
-                || ($puesto !== '' && trim((string) ($user['puesto'] ?? '')) !== $puesto)
-                || ($turno !== '' && trim((string) ($user['turno'] ?? '')) !== $turno)
-                || ($turnoHorario !== '' && trim((string) ($user['turno_horario'] ?? '')) !== $turnoHorario)
-                || ($turnoCodigo !== '' && trim((string) ($user['turno_codigo'] ?? '')) !== $turnoCodigo)
-                || ($area !== '' && trim((string) ($user['area'] ?? '')) !== $area)
+                || ($puesto !== '' && trim((string) ($user['puesto'] ?? '')) === '')
+                || ($turno !== '' && trim((string) ($user['turno'] ?? '')) === '')
+                || ($turnoHorario !== '' && trim((string) ($user['turno_horario'] ?? '')) === '')
+                || ($turnoCodigo !== '' && trim((string) ($user['turno_codigo'] ?? '')) === '')
                 || ($doc !== '' && grooflow_buk_normalize_dni((string) ($user['buk_dni'] ?? '')) !== $doc);
+
+            if (! $needs) {
+                continue;
+            }
 
             $upd->execute([
                 $doc,
@@ -192,12 +211,30 @@ function grooflow_buk_sync_usuarios_from_empleados(PDO $pdo, string $syncedAt): 
                 $turno,
                 $turnoHorario,
                 $turnoCodigo,
-                $area,
                 $doc,
                 $syncedAt,
                 $id,
             ]);
-            if ($changed || $upd->rowCount() > 0) {
+
+            if ($doc !== '') {
+                $user['identificacion'] = $doc;
+                $user['buk_dni'] = $doc;
+            }
+            if ($puesto !== '' && trim((string) ($user['puesto'] ?? '')) === '') {
+                $user['puesto'] = $puesto;
+            }
+            if ($turno !== '' && trim((string) ($user['turno'] ?? '')) === '') {
+                $user['turno'] = $turno;
+            }
+            if ($turnoHorario !== '' && trim((string) ($user['turno_horario'] ?? '')) === '') {
+                $user['turno_horario'] = $turnoHorario;
+            }
+            if ($turnoCodigo !== '' && trim((string) ($user['turno_codigo'] ?? '')) === '') {
+                $user['turno_codigo'] = $turnoCodigo;
+            }
+            $usersById[$id] = $user;
+
+            if ($upd->rowCount() > 0 || $needs) {
                 $updated++;
             }
         }
