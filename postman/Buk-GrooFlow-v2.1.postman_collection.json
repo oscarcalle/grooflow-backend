@@ -1,0 +1,364 @@
+{
+  "info": {
+    "_postman_id": "41d60687-f229-4ccd-a989-6d706f7698d8",
+    "name": "Buk GrooFlow APIs v2.1",
+    "description": "APIs externas de Buk que consume GrooFlow (código en grooflow-backend).\n\n## Fuentes\n\n### 1) Buk.pe RRHH (Perú)\n- Base: `{{bukPeBaseUrl}}` → default `https://veterinariagroomers.buk.pe/api/v1/peru`\n- Auth header: `auth_token: {{bukPeToken}}`\n- Endpoint: `GET /employees`\n- Persiste en: `grooflow_buk_empleados` (+ payload JSON)\n- Cron: `cron/jobs/grooflow/sync_buk_rrhh.php` / Sync organigrama RRHH\n\n### 2) Buk Asistencia Ctrlit (Chile)\n- Base v2: `{{ctrlitBaseV2}}` → `https://app.ctrlit.cl/ctrl/api/v2`\n- Root (sin /v2): `{{ctrlitApiRoot}}` → `https://app.ctrlit.cl/ctrl/api`\n- Auth header: `token: {{ctrlitToken}}` (en turnos también `?token=`)\n- Endpoints:\n  - `GET /asistencia-empresa` → marcaciones / área / turno\n  - `GET /obtenerNominaColaborador` → DNI, especialidad, contrato, obra\n  - `GET /getAsignacionTurnos` → área, horario, nombre turno\n- Persiste en: `grooflow_asistencia_buk_records`, columnas de turno en `grooflow_buk_empleados`, proyección a `app_usuarios`\n- Cron: Sync Buk usuarios / pipeline marcaciones\n\n## Tablas MySQL (Hostinger)\n| Tabla | Origen |\n|---|---|\n| `grooflow_buk_empleados` | Buk.pe `/employees` (+ enrich Ctrlit asistencia) |\n| `grooflow_asistencia_buk_records` | Ctrlit `/asistencia-empresa` |\n| `grooflow_asistencia_meta` | Config tokens Buk (`buk_json`) |\n| `grooflow_asistencia_operational` | Cache operativa con flag `buk_enabled` |\n| `grooflow_asistencia_snapshots` | Snapshots diarios (conteos Buk) |\n| `app_usuarios` | Sync: `identificacion`, `puesto`, `turno`, `turno_horario`, `turno_codigo`, `buk_dni`, `buk_obra_id`, `buk_synced_at`, `especialidad`, `contrato` |\n| `grooflow_kv` key `settings:system` | Token/config `bukPe` |\n\n## Cómo probar\n1. Importa esta collection + el environment `Buk-GrooFlow-v2.1.postman_environment.json`.\n2. Completa `bukPeToken` y `ctrlitToken` (Integraciones GrooFlow).\n3. Corre cada request; los tests validan HTTP 2xx y presencia de `data`/`pagination`.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "version": "2.1.0"
+  },
+  "variable": [
+    { "key": "bukPeBaseUrl", "value": "https://veterinariagroomers.buk.pe/api/v1/peru" },
+    { "key": "bukPeToken", "value": "" },
+    { "key": "ctrlitBaseV2", "value": "https://app.ctrlit.cl/ctrl/api/v2" },
+    { "key": "ctrlitApiRoot", "value": "https://app.ctrlit.cl/ctrl/api" },
+    { "key": "ctrlitToken", "value": "" },
+    { "key": "page", "value": "1" },
+    { "key": "pageSize", "value": "100" }
+  ],
+  "item": [
+    {
+      "name": "1. Buk.pe RRHH",
+      "description": "Nómina de empleados Perú. Auth: header `auth_token`.\nGuarda en `grooflow_buk_empleados` (cargo, área, documento, emails, contrato, payload).",
+      "item": [
+        {
+          "name": "GET employees (página)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 2xx', () => pm.response.to.be.success);",
+                  "const j = pm.response.json();",
+                  "pm.test('Tiene data o lista', () => {",
+                  "  pm.expect(j).to.be.an('object');",
+                  "  const rows = Array.isArray(j.data) ? j.data : (Array.isArray(j) ? j : null);",
+                  "  pm.expect(rows, 'data[]').to.not.equal(null);",
+                  "});",
+                  "if (j && j.pagination) {",
+                  "  console.log('pagination', j.pagination);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "auth_token", "value": "{{bukPeToken}}", "type": "text" },
+              { "key": "Accept", "value": "application/json", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{bukPeBaseUrl}}/employees?page={{page}}&page_size={{pageSize}}",
+              "host": ["{{bukPeBaseUrl}}"],
+              "path": ["employees"],
+              "query": [
+                { "key": "page", "value": "{{page}}" },
+                { "key": "page_size", "value": "{{pageSize}}" }
+              ]
+            },
+            "description": "Usado por `grooflow_buk_pe_fetch_page()` / sync RRHH.\n\nCampos útiles por empleado: `id`, `person_id`, `full_name`, `document_number`, `email`, `personal_email`, `status`, `current_job.role.name` (cargo), `current_job.role.role_family.name` (área)."
+          }
+        },
+        {
+          "name": "GET employees página 2",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "auth_token", "value": "{{bukPeToken}}", "type": "text" },
+              { "key": "Accept", "value": "application/json", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{bukPeBaseUrl}}/employees?page=2&page_size={{pageSize}}",
+              "host": ["{{bukPeBaseUrl}}"],
+              "path": ["employees"],
+              "query": [
+                { "key": "page", "value": "2" },
+                { "key": "page_size", "value": "{{pageSize}}" }
+              ]
+            },
+            "description": "Segunda página (paginación típica: `pagination.total_pages`)."
+          }
+        },
+        {
+          "name": "GET employees page_size=5 (smoke)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 2xx', () => pm.response.to.be.success);",
+                  "const j = pm.response.json();",
+                  "const rows = Array.isArray(j.data) ? j.data : [];",
+                  "pm.test('≤ 5 registros', () => pm.expect(rows.length).to.be.at.most(5));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "auth_token", "value": "{{bukPeToken}}", "type": "text" },
+              { "key": "Accept", "value": "application/json", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{bukPeBaseUrl}}/employees?page=1&page_size=5",
+              "host": ["{{bukPeBaseUrl}}"],
+              "path": ["employees"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "page_size", "value": "5" }
+              ]
+            },
+            "description": "Prueba rápida de token / conectividad (como el test de Integraciones)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Buk Asistencia Ctrlit",
+      "description": "APIs Ctrlit usadas por Sync Buk → `app_usuarios` y pipeline de marcaciones.\nAuth: header `token: {{ctrlitToken}}`.",
+      "item": [
+        {
+          "name": "GET asistencia-empresa (página)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 2xx', () => pm.response.to.be.success);",
+                  "const j = pm.response.json();",
+                  "pm.test('data[] presente', () => pm.expect(j.data).to.be.an('array'));",
+                  "if (j.data && j.data[0]) {",
+                  "  console.log('sample keys', Object.keys(j.data[0]));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "token", "value": "{{ctrlitToken}}", "type": "text" },
+              { "key": "Accept", "value": "application/json", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{ctrlitBaseV2}}/asistencia-empresa?page={{page}}&page_size={{pageSize}}",
+              "host": ["{{ctrlitBaseV2}}"],
+              "path": ["asistencia-empresa"],
+              "query": [
+                { "key": "page", "value": "{{page}}" },
+                { "key": "page_size", "value": "{{pageSize}}" }
+              ]
+            },
+            "description": "`grooflow_buk_fetch_page()` / `grooflow_buk_fetch_asistencia_today()`.\n\nCampos típicos: `rut_trabajador` (DNI), nombre, área, turno, código turno, recinto, marcaciones.\n\nPersistencia:\n- `grooflow_asistencia_buk_records`\n- enrich columnas turno/área en `grooflow_buk_empleados`\n- Sync usuarios: `app_usuarios.turno`, `turno_horario`, `turno_codigo`, `area`"
+          }
+        },
+        {
+          "name": "GET asistencia-empresa smoke page_size=5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 2xx', () => pm.response.to.be.success);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "token", "value": "{{ctrlitToken}}", "type": "text" },
+              { "key": "Accept", "value": "application/json", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{ctrlitBaseV2}}/asistencia-empresa?page=1&page_size=5",
+              "host": ["{{ctrlitBaseV2}}"],
+              "path": ["asistencia-empresa"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "page_size", "value": "5" }
+              ]
+            },
+            "description": "Equivalente al test de conexión Buk Asistencia en Integraciones."
+          }
+        },
+        {
+          "name": "GET obtenerNominaColaborador",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 2xx', () => pm.response.to.be.success);",
+                  "const j = pm.response.json();",
+                  "const rows = Array.isArray(j.data) ? j.data : (Array.isArray(j) ? j : []);",
+                  "pm.test('Trae registros o lista vacía válida', () => pm.expect(rows).to.be.an('array'));",
+                  "if (rows[0]) console.log('sample', rows[0]);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "token", "value": "{{ctrlitToken}}", "type": "text" },
+              { "key": "Accept", "value": "application/json", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{ctrlitApiRoot}}/obtenerNominaColaborador?page={{page}}&page_size={{pageSize}}",
+              "host": ["{{ctrlitApiRoot}}"],
+              "path": ["obtenerNominaColaborador"],
+              "query": [
+                { "key": "page", "value": "{{page}}" },
+                { "key": "page_size", "value": "{{pageSize}}" }
+              ]
+            },
+            "description": "`grooflow_buk_fetch_nomina_all()` — **sin** `/v2` en el path.\n\nCampos: `DNI`/`dni`, `especialidad`, `contrato`, `obra_id`, `empresa`.\n\n→ `app_usuarios`: `identificacion`, `puesto`/`especialidad`, `contrato`, `buk_obra_id`, `buk_dni`."
+          }
+        },
+        {
+          "name": "GET getAsignacionTurnos",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 2xx', () => pm.response.to.be.success);",
+                  "const j = pm.response.json();",
+                  "const rows = Array.isArray(j.data) ? j.data : (Array.isArray(j) ? j : []);",
+                  "pm.test('Lista de turnos', () => pm.expect(rows).to.be.an('array'));",
+                  "if (rows[0]) console.log('sample keys', Object.keys(rows[0]));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "token", "value": "{{ctrlitToken}}", "type": "text" },
+              { "key": "Accept", "value": "application/json", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{ctrlitApiRoot}}/getAsignacionTurnos?token={{ctrlitToken}}",
+              "host": ["{{ctrlitApiRoot}}"],
+              "path": ["getAsignacionTurnos"],
+              "query": [
+                { "key": "token", "value": "{{ctrlitToken}}", "description": "El código también manda token en query además del header." }
+              ]
+            },
+            "description": "`grooflow_buk_fetch_turnos_all()` — token en **header y query**.\n\nCampos: `dni`, área, nombre turno, horario, código.\n\n→ `app_usuarios.turno`, `turno_horario`, `turno_codigo`."
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Casos de verificación (Alanies / DNI)",
+      "description": "Ayuda a validar el caso Sync Buk por DNI (ej. 73704491).",
+      "item": [
+        {
+          "name": "Buscar empleado Buk.pe por document_number (script)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Ajusta el DNI a buscar:",
+                  "pm.variables.set('lookupDni', pm.collectionVariables.get('lookupDni') || '73704491');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const dni = String(pm.variables.get('lookupDni') || '73704491').replace(/\\D+/g, '');",
+                  "pm.test('HTTP 2xx', () => pm.response.to.be.success);",
+                  "const j = pm.response.json();",
+                  "const rows = Array.isArray(j.data) ? j.data : [];",
+                  "const hit = rows.find(r => String(r.document_number || '').replace(/\\D+/g, '') === dni);",
+                  "if (hit) {",
+                  "  console.log('FOUND page', pm.collectionVariables.get('page'), {",
+                  "    id: hit.id,",
+                  "    status: hit.status,",
+                  "    document_number: hit.document_number,",
+                  "    email: hit.email,",
+                  "    cargo: hit.current_job && hit.current_job.role && hit.current_job.role.name,",
+                  "    area: hit.current_job && hit.current_job.role && hit.current_job.role.role_family && hit.current_job.role.role_family.name",
+                  "  });",
+                  "  pm.test('Encontrado en esta página', () => pm.expect(hit).to.be.ok);",
+                  "} else {",
+                  "  console.warn('No está en page=' + (pm.collectionVariables.get('page') || '1') + ' — prueba otras páginas.');",
+                  "  pm.test('Respuesta válida (puede no estar en esta página)', () => pm.expect(rows).to.be.an('array'));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "auth_token", "value": "{{bukPeToken}}", "type": "text" },
+              { "key": "Accept", "value": "application/json", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{bukPeBaseUrl}}/employees?page={{page}}&page_size={{pageSize}}",
+              "host": ["{{bukPeBaseUrl}}"],
+              "path": ["employees"],
+              "query": [
+                { "key": "page", "value": "{{page}}" },
+                { "key": "page_size", "value": "{{pageSize}}" }
+              ]
+            },
+            "description": "Busca en la página actual el DNI `73704491` (Alanies). Cambia `page` si no aparece.\n\nEn MySQL debería mapear a `grooflow_buk_empleados.document_number` y luego Sync → `app_usuarios.identificacion` + `puesto=cargo`."
+          }
+        },
+        {
+          "name": "Buscar DNI en asistencia-empresa (script)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const dni = '73704491';",
+                  "pm.test('HTTP 2xx', () => pm.response.to.be.success);",
+                  "const j = pm.response.json();",
+                  "const rows = Array.isArray(j.data) ? j.data : [];",
+                  "const hits = rows.filter(r => String(r.rut_trabajador || r.DNI || r.dni || '').replace(/\\D+/g, '') === dni);",
+                  "console.log('hits', hits.length, hits[0] || null);",
+                  "pm.test('Lista válida', () => pm.expect(rows).to.be.an('array'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "token", "value": "{{ctrlitToken}}", "type": "text" },
+              { "key": "Accept", "value": "application/json", "type": "text" }
+            ],
+            "url": {
+              "raw": "{{ctrlitBaseV2}}/asistencia-empresa?page=1&page_size={{pageSize}}",
+              "host": ["{{ctrlitBaseV2}}"],
+              "path": ["asistencia-empresa"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "page_size", "value": "{{pageSize}}" }
+              ]
+            },
+            "description": "Si Alanies no tiene turno en `grooflow_buk_empleados`, suele ser porque Ctrlit no trae marcación/turno para ese DNI."
+          }
+        }
+      ]
+    }
+  ]
+}
