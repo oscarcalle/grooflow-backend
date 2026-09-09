@@ -94,6 +94,14 @@ function grooflow_dispatch(PDO $pdo): void
         return;
     }
 
+    if (str_starts_with($path, '/proxy/sunat/')) {
+        $data = $method === 'POST' ? api_request_json() : $_GET;
+        $result = grooflow_handle_sunat('ruc', $data);
+        api_json_response($result);
+
+        return;
+    }
+
     if ($path === '/auth/login' && $method === 'POST') {
         $data = api_request_json();
         $identifier = (string) ($data['username'] ?? $data['email'] ?? $data['identifier'] ?? '');

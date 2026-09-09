@@ -737,3 +737,63 @@ function grooflow_handle_buk_pe(PDO $pdo, string $action, array $data): array
 
     throw new InvalidArgumentException('Acción Buk.pe no soportada.');
 }
+
+function grooflow_handle_sunat(string $action, array $data): array
+{
+    $ruc = preg_replace('/\D/', '', (string) ($data['numero'] ?? $data['ruc'] ?? ''));
+    if (strlen($ruc) !== 11) {
+        throw new InvalidArgumentException('El RUC debe tener exactamente 11 dígitos.');
+    }
+
+    $url = 'https://api.apis.net.pe/v1/ruc?numero=' . $ruc;
+    try {
+        $res = grooflow_proxy_fetch($url, ['Accept: application/json'], 10);
+        if ($res['status'] >= 200 && $res['status'] < 300) {
+            $json = json_decode($res['body'], true);
+            if (is_array($json)) {
+                $name = trim((string) ($json['nombre'] ?? $json['razonSocial'] ?? $json['razon_social'] ?? ''));
+                if ($name !== '') {
+                    return [
+                        'ok' => true,
+                        'ruc' => $ruc,
+                        'razonSocial' => $name,
+                        'direccion' => trim((string) ($json['direccion'] ?? '')),
+                        'estado' => trim((string) ($json['estado'] ?? '')),
+                        'condicion' => trim((string) ($json['condicion'] ?? '')),
+                    ];
+                }
+            }
+        }
+    } catch (Throwable $e) {
+        error_log('[grooflow_sunat] apis.net.pe error: ' . $e->getMessage());
+    }
+
+    try {
+        $url2 = 'https://dniruc.apisperu.com/api/v1/ruc/' . $ruc;
+        $res2 = grooflow_proxy_fetch($url2, ['Accept: application/json'], 10);
+        if ($res2['status'] >= 200 && $res2['status'] < 300) {
+            $json2 = json_decode($res2['body'], true);
+            if (is_array($json2)) {
+                $name2 = trim((string) ($json2['razonsocial'] ?? $json2['nombre'] ?? ''));
+                if ($name2 !== '') {
+                    return [
+                        'ok' => true,
+                        'ruc' => $ruc,
+                        'razonSocial' => $name2,
+                        'direccion' => trim((string) ($json2['direccion'] ?? '')),
+                        'estado' => trim((string) ($json2['estado'] ?? '')),
+                        'condicion' => trim((string) ($json2['condicion'] ?? '')),
+                    ];
+                }
+            }
+        }
+    } catch (Throwable $e) {
+        error_log('[grooflow_sunat] apisperu error: ' . $e->getMessage());
+    }
+
+    return [
+        'ok' => false,
+        'error' => 'No se encontraron datos para el RUC ingresado.',
+    ];
+}
+
