@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/grooflow_users.php';
+
 function grooflow_kv_get(PDO $pdo, string $key): mixed
 {
     grooflow_ensure_schema($pdo);

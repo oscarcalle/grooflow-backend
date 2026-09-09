@@ -8,6 +8,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/grooflow_proxy.php';
+require_once __DIR__ . '/grooflow_users.php';
 require_once __DIR__ . '/grooflow_kv.php';
 require_once __DIR__ . '/grooflow_asistencia.php';
 require_once __DIR__ . '/grooflow_buk_sync.php';
@@ -2096,4 +2097,3 @@ function grooflow_rrhh_identity_diagnosis(PDO $pdo, int $sampleLimit = 40): arra
         ],
     ];
 }
-
