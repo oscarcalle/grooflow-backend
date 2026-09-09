@@ -297,3 +297,20 @@ function grooflow_lists_delete(PDO $pdo, string $name, array $ids, bool $allMatc
 
     return ['deleted' => $deleted];
 }
+
+function grooflow_filter_list(array $items, array $query): array
+{
+    return array_values(array_filter($items, function ($row) use ($query) {
+        foreach (['status', 'week', 'weekNumber', 'sede', 'location', 'providerId', 'priority'] as $field) {
+            $value = trim((string) ($query[$field] ?? ''));
+            if ($value !== '' && $value !== 'all' && (string) ($row[$field] ?? '') !== $value) return false;
+        }
+        $tab = $query['tab'] ?? 'all';
+        if (in_array($tab, ['pending', 'approved', 'rejected'], true) && ($row['status'] ?? '') !== $tab) return false;
+        if ($tab === 'history' && ($row['status'] ?? '') === 'pending') return false;
+        $date = substr((string) ($row['date'] ?? $row['createdAt'] ?? ''), 0, 10);
+        if (!empty($query['from']) && $date < $query['from']) return false;
+        if (!empty($query['to']) && $date > $query['to']) return false;
+        return true;
+    }));
+}

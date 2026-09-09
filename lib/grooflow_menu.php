@@ -727,6 +727,7 @@ function grooflow_menu_permissions_for_nivel(PDO $pdo, int $nivelId): array
 
     $assignment = grooflow_nivel_menu_for_nivel($pdo, $nivelId);
     foreach ($assignment['items'] as $item) {
+        if (empty($item['asignado']) || empty($item['permisos']['ver'])) continue;
         $mod = trim((string) ($item['modulo_key'] ?? ''));
         if ($mod !== '') {
             $permissions[$mod] = true;

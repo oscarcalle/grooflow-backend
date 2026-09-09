@@ -6,7 +6,7 @@ declare(strict_types=1);
  * CLI / Hostinger cron — ejecuta pipelines Fase 3.
  *
  * Ejemplo crontab (cada 15 min):
- *   */15 * * * * /usr/bin/php /ruta/grooflow-backend/bin/run-pipelines.php >> /tmp/grooflow-pipelines.log 2>&1
+ *   Ejecutar /usr/bin/php /ruta/grooflow-backend/bin/run-pipelines.php cada 15 minutos.
  *
  * Opcional: export GROOFLOW_CRON_KEY=... (no obligatorio en CLI local).
  */

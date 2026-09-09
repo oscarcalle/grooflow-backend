@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/grooflow_schema.php';
 require_once __DIR__ . '/grooflow_users.php';
 
 function grooflow_kv_get(PDO $pdo, string $key): mixed
@@ -296,6 +297,8 @@ function grooflow_kv_bootstrap_keys(): array
         'data:feeReceipts',
         'data:treasuryInvoices',
         'data:treasuryBankBalance',
+        'data:treasuryUsdBalance',
+        'data:monthlyClosures',
         'data:treasuryPaidHistory',
         'data:treasurySubscriptions',
         'data:treasuryBankMovements',

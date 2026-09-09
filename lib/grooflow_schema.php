@@ -46,8 +46,6 @@ function grooflow_kv_array_tables(): array
         'data:requisitions' => 'grooflow_requisiciones',
         'data:products' => 'grooflow_productos',
         'data:feeReceipts' => 'grooflow_honorarios',
-        'data:fleet' => 'grooflow_flota',
-        'data:inventory' => 'grooflow_inventario',
     ];
 }
 
@@ -154,6 +152,8 @@ function grooflow_ensure_schema(PDO $pdo): void
     require_once __DIR__ . '/grooflow_rrhh.php';
     grooflow_rrhh_ensure_schema($pdo);
 
+    $pdo->exec("CREATE TABLE IF NOT EXISTS grooflow_write_lock (id INT PRIMARY KEY) ENGINE=InnoDB");
+    $pdo->exec("INSERT IGNORE INTO grooflow_write_lock (id) VALUES (1)");
     grooflow_seed_roles($pdo);
     grooflow_asistencia_backfill_role_permissions($pdo);
 

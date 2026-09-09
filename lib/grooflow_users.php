@@ -236,6 +236,7 @@ function grooflow_user_to_app(PDO $pdo, array $row): array
         : ($sedes[0] ?? null);
 
     $user = [
+        'personalProfile' => $extra['personalProfile'] ?? [],
         'id' => (string) $id,
         'name' => $name,
         'initials' => grooflow_initials($name, $username),
