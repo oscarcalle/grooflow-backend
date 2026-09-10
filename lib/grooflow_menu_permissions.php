@@ -11,7 +11,7 @@ function grooflow_menu_actions_for_route(?string $route, ?string $moduloKey = nu
     $mod = trim((string) $moduloKey);
     $actions = ['ver'];
 
-    $exportRoutes = ['/reportes', '/auditoria', '/transacciones', '/caja-chica', '/conciliacion'];
+    $exportRoutes = ['/reportes', '/auditoria', '/transacciones', '/caja-chica', '/conciliacion', '/marketing-eventos'];
     foreach ($exportRoutes as $prefix) {
         if ($route === $prefix || str_starts_with($route, $prefix . '/')) {
             $actions[] = 'exportar';
@@ -29,7 +29,9 @@ function grooflow_menu_actions_for_route(?string $route, ?string $moduloKey = nu
 
     $crudModules = [
         'Proveedores', 'Productos', 'Compras', 'Gestión Vehicular', 'Gestión de Inventario',
-        'Transacciones', 'Caja Chica', 'Honorarios',
+        'Transacciones', 'Caja Chica', 'Honorarios', 'Marketing Eventos',
+        'Accidentes de Trabajo', 'Entrega de Uniformes', 'Recursos Humanos',
+        'Asistencia', 'Turnos',
     ];
     if (in_array($mod, $crudModules, true)) {
         $actions = array_merge($actions, ['agregar', 'editar', 'eliminar']);

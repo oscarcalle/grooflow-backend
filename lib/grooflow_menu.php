@@ -89,6 +89,7 @@ function grooflow_menu_default_icon_color(string $moduloKey): string
         'Turnos' => 'text-violet-400 group-hover/btn:text-violet-300',
         'Accidentes de Trabajo' => 'text-rose-400 group-hover/btn:text-rose-300',
         'Entrega de Uniformes' => 'text-indigo-400 group-hover/btn:text-indigo-300',
+        'Marketing Eventos' => 'text-fuchsia-400 group-hover/btn:text-fuchsia-300',
         'Recursos Humanos' => 'text-blue-400 group-hover/btn:text-blue-300',
         'Catálogo Áreas' => 'text-sky-400 group-hover/btn:text-sky-300',
         'Catálogo Puestos' => 'text-indigo-400 group-hover/btn:text-indigo-300',
@@ -130,6 +131,7 @@ function grooflow_menu_default_leaves(): array
         ['section' => 'Gestión', 'label' => 'Turnos', 'ruta' => '/turnos', 'modulo_key' => 'Turnos', 'icono' => 'fa-calendar-days'],
         ['section' => 'Gestión', 'label' => 'Accidentes de Trabajo', 'ruta' => '/accidentes-trabajo', 'modulo_key' => 'Accidentes de Trabajo', 'icono' => 'fa-hard-hat'],
         ['section' => 'Gestión', 'label' => 'Entrega de Uniformes', 'ruta' => '/entrega-uniformes', 'modulo_key' => 'Entrega de Uniformes', 'icono' => 'fa-shirt'],
+        ['section' => 'Gestión', 'label' => 'Marketing Eventos', 'ruta' => '/marketing-eventos', 'modulo_key' => 'Marketing Eventos', 'icono' => 'fa-calendar-check'],
         ['section' => 'Recursos Humanos', 'label' => 'Colaboradores', 'ruta' => '/recursos-humanos', 'modulo_key' => 'Recursos Humanos', 'icono' => 'fa-users'],
         ['section' => 'Recursos Humanos', 'label' => 'Áreas', 'ruta' => '/catalogo/areas', 'modulo_key' => 'Catálogo Áreas', 'icono' => 'fa-sitemap'],
         ['section' => 'Recursos Humanos', 'label' => 'Puestos', 'ruta' => '/catalogo/puestos', 'modulo_key' => 'Catálogo Puestos', 'icono' => 'fa-briefcase'],
@@ -679,14 +681,16 @@ function grooflow_nivel_menu_sync(PDO $pdo, int $nivelId, array $menuIds, array 
                 $perm = is_array($permissionsByMenu[$menuId] ?? null)
                     ? $permissionsByMenu[$menuId]
                     : (is_array($permissionsByMenu[(string) $menuId] ?? null) ? $permissionsByMenu[(string) $menuId] : []);
+                // Si no vienen acciones, al asignar el módulo se concede operar completo.
+                $grantAll = $perm === [];
                 $stmt->execute([
                     $nivelId,
                     $menuId,
-                    ! empty($perm['agregar']) ? 1 : 0,
-                    ! empty($perm['editar']) ? 1 : 0,
-                    ! empty($perm['eliminar']) ? 1 : 0,
-                    ! empty($perm['exportar']) ? 1 : 0,
-                    ! empty($perm['configurar']) ? 1 : 0,
+                    ($grantAll || ! empty($perm['agregar'])) ? 1 : 0,
+                    ($grantAll || ! empty($perm['editar'])) ? 1 : 0,
+                    ($grantAll || ! empty($perm['eliminar'])) ? 1 : 0,
+                    ($grantAll || ! empty($perm['exportar'])) ? 1 : 0,
+                    ($grantAll || ! empty($perm['configurar'])) ? 1 : 0,
                 ]);
             }
         }
