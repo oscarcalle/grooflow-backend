@@ -191,11 +191,41 @@ function grooflow_list_users(PDO $pdo): array
     return $out;
 }
 
+/** True si la URL puede usarse en un <img> (no vacía ni data: truncada). */
+function grooflow_avatar_url_is_usable(string $raw): bool
+{
+    $raw = trim($raw);
+    if ($raw === '') {
+        return false;
+    }
+    if (str_starts_with($raw, 'data:image/')) {
+        $comma = strpos($raw, ',');
+        if ($comma === false) {
+            return false;
+        }
+        $body = trim(substr($raw, $comma + 1));
+        if (strlen($body) < 64) {
+            return false;
+        }
+        // Columna imagen corta suele truncar data URLs (~255 chars).
+        if (strlen($raw) <= 255 && strlen($body) < 180) {
+            return false;
+        }
+
+        return true;
+    }
+    if (preg_match('#^(https?:)?//#i', $raw) === 1 || str_starts_with($raw, '/')) {
+        return true;
+    }
+
+    return false;
+}
+
 /** @param array<string, mixed> $row */
 function grooflow_user_gestion_avatar_url(array $row): string
 {
     $raw = trim((string) ($row['imagen'] ?? ''));
-    if ($raw === '') {
+    if ($raw === '' || ! grooflow_avatar_url_is_usable($raw)) {
         return '';
     }
     if (! function_exists('uploads_public_path')) {
@@ -235,8 +265,13 @@ function grooflow_user_to_app(PDO $pdo, array $row): array
         ? grooflow_resolve_sede_canonical($pdo, $rawLocation)
         : ($sedes[0] ?? null);
 
+    $personalProfile = $extra['personalProfile'] ?? [];
+    if (! is_array($personalProfile) || array_is_list($personalProfile)) {
+        $personalProfile = [];
+    }
+
     $user = [
-        'personalProfile' => $extra['personalProfile'] ?? [],
+        'personalProfile' => $personalProfile === [] ? new \stdClass() : $personalProfile,
         'id' => (string) $id,
         'name' => $name,
         'initials' => grooflow_initials($name, $username),
@@ -270,16 +305,13 @@ function grooflow_user_to_app(PDO $pdo, array $row): array
         $user['pettyCashOpeningCarryConsumedAt'] = (string) $perfil['petty_cash_opening_carry_consumed_at'];
     }
     $gestionAvatar = grooflow_user_gestion_avatar_url($row);
-    if ($gestionAvatar !== '') {
+    $customPhoto = is_array($personalProfile)
+        ? trim((string) ($personalProfile['customPhotoUrl'] ?? ''))
+        : '';
+    if (grooflow_avatar_url_is_usable($customPhoto)) {
+        $user['avatarUrl'] = $customPhoto;
+    } elseif (grooflow_avatar_url_is_usable($gestionAvatar)) {
         $user['avatarUrl'] = $gestionAvatar;
-    } else {
-        $customPhoto = '';
-        if (is_array($user['personalProfile'] ?? null)) {
-            $customPhoto = trim((string) ($user['personalProfile']['customPhotoUrl'] ?? ''));
-        }
-        if ($customPhoto !== '') {
-            $user['avatarUrl'] = $customPhoto;
-        }
     }
     $theme = $extra['theme'] ?? null;
     if ($theme === 'light' || $theme === 'dark') {

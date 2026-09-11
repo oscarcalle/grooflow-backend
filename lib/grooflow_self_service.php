@@ -59,10 +59,24 @@ function grooflow_save_own_profile(PDO $pdo, array $data): array
     $extra = grooflow_json_decode($stmt->fetchColumn() ?: null) ?? [];
     $extra['personalProfile'] = array_merge($extra['personalProfile'] ?? [], $data);
     $pdo->prepare('UPDATE grooflow_perfiles SET extra_json = ? WHERE usuario_id = ?')->execute([grooflow_json_encode($extra), $id]);
+    $imagenValue = $row['imagen'] ?? null;
+    if (array_key_exists('customPhotoUrl', $data)) {
+        $photo = trim((string) ($data['customPhotoUrl'] ?? ''));
+        if ($photo === '') {
+            $imagenValue = null;
+        } elseif (str_starts_with($photo, 'data:')) {
+            // data: vive en extra_json; no caben en app_usuarios.imagen (se trunca).
+            if (is_string($imagenValue) && str_starts_with($imagenValue, 'data:')) {
+                $imagenValue = null;
+            }
+        } else {
+            $imagenValue = $photo;
+        }
+    }
     $pdo->prepare('UPDATE app_usuarios SET nombre = ?, apellido = ?, email = ?, celular = ?, identificacion = ?, imagen = ? WHERE id = ?')->execute([
         trim((string) ($data['firstName'] ?? $row['nombre'])), trim((string) ($data['lastName'] ?? $row['apellido'])), $email,
         $data['phone'] ?? $row['celular'] ?? null, $data['documentNumber'] ?? $row['identificacion'] ?? null,
-        array_key_exists('customPhotoUrl', $data) ? $data['customPhotoUrl'] : ($row['imagen'] ?? null), $id,
+        $imagenValue, $id,
     ]);
     $stmt = $pdo->prepare('SELECT * FROM app_usuarios WHERE id = ?'); $stmt->execute([$id]);
     return grooflow_user_to_app($pdo, $stmt->fetch(PDO::FETCH_ASSOC));
