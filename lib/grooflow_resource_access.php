@@ -25,6 +25,7 @@ function grooflow_resource_modules(string $key, bool $write = false): array
         'data:treasuryUsdBalance', 'data:treasuryInvoices', 'data:treasuryBankBalance', 'data:treasuryPaidHistory', 'data:treasurySubscriptions', 'data:treasuryBankMovements' => ['Tesorería'],
         'data:monthlyClosures' => ['Reportes'],
         'settings:config', 'settings:system', 'settings:theme', 'settings:alertThresholds', 'data:sedes', 'settings:alertReadState' => $write ? ['Configuración'] : ['*'],
+        'maintenance:transactionsClearedAt' => $write ? [] : ['*'],
         'data:users', 'data:roles' => ['Usuarios'],
         default => [],
     };

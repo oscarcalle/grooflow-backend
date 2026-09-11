@@ -272,6 +272,14 @@ function grooflow_user_to_app(PDO $pdo, array $row): array
     $gestionAvatar = grooflow_user_gestion_avatar_url($row);
     if ($gestionAvatar !== '') {
         $user['avatarUrl'] = $gestionAvatar;
+    } else {
+        $customPhoto = '';
+        if (is_array($user['personalProfile'] ?? null)) {
+            $customPhoto = trim((string) ($user['personalProfile']['customPhotoUrl'] ?? ''));
+        }
+        if ($customPhoto !== '') {
+            $user['avatarUrl'] = $customPhoto;
+        }
     }
     $theme = $extra['theme'] ?? null;
     if ($theme === 'light' || $theme === 'dark') {
