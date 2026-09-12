@@ -188,7 +188,7 @@ function grooflow_menu_sync_catalog(PDO $pdo): void
         INSERT INTO grooflow_menu_opciones (texto, icono, icon_color, ruta, modulo_key, es_padre, padre_id, orden, estado)
         VALUES (?, ?, ?, ?, ?, 0, ?, ?, \'activo\')
     ');
-    // No pisar texto/icono/ruta/icon_color/padre_id/orden ya personalizados por el admin.
+    // No pisar texto/icono/ruta/icon_color/padre_id/orden/estado ya personalizados por el admin.
     $updateLeaf = $pdo->prepare('
         UPDATE grooflow_menu_opciones
         SET
@@ -196,8 +196,7 @@ function grooflow_menu_sync_catalog(PDO $pdo): void
             icono = COALESCE(NULLIF(TRIM(icono), \'\'), ?),
             icon_color = COALESCE(NULLIF(TRIM(icon_color), \'\'), ?),
             ruta = CASE WHEN TRIM(ruta) = \'\' THEN ? ELSE ruta END,
-            modulo_key = CASE WHEN TRIM(modulo_key) = \'\' THEN ? ELSE modulo_key END,
-            estado = \'activo\'
+            modulo_key = CASE WHEN TRIM(modulo_key) = \'\' THEN ? ELSE modulo_key END
         WHERE id = ?
     ');
 
@@ -373,6 +372,41 @@ function grooflow_menu_tree(PDO $pdo): array
     ];
 }
 
+/** Resuelve modulo_key y ruta canónica a partir de una ruta (acepta alias /compras → /solicitudes). */
+function grooflow_menu_resolve_ruta(string $ruta): array
+{
+    $ruta = trim($ruta);
+    if ($ruta === '') {
+        return ['ruta' => '', 'modulo_key' => ''];
+    }
+    if ($ruta === '/grooflow') {
+        $ruta = '/';
+    } elseif (str_starts_with($ruta, '/grooflow/')) {
+        $ruta = substr($ruta, strlen('/grooflow')) ?: '/';
+    }
+    if ($ruta !== '/' && str_ends_with($ruta, '/')) {
+        $ruta = rtrim($ruta, '/') ?: '/';
+    }
+    $aliases = [
+        '/compras' => '/solicitudes',
+        '/compra' => '/solicitudes',
+        '/requerimientos' => '/solicitudes',
+        '/solicitudes-compra' => '/solicitudes',
+        '/provider' => '/proveedores',
+        '/providers' => '/proveedores',
+        '/producto' => '/productos',
+        '/products' => '/productos',
+    ];
+    $ruta = $aliases[$ruta] ?? $ruta;
+    foreach (grooflow_menu_default_leaves() as $leaf) {
+        if ((string) $leaf['ruta'] === $ruta) {
+            return ['ruta' => $ruta, 'modulo_key' => (string) $leaf['modulo_key']];
+        }
+    }
+
+    return ['ruta' => $ruta, 'modulo_key' => ''];
+}
+
 /** @param array<string, mixed> $data */
 function grooflow_menu_create(PDO $pdo, array $data): array
 {
@@ -387,6 +421,13 @@ function grooflow_menu_create(PDO $pdo, array $data): array
     $moduloKey = trim((string) ($data['modulo_key'] ?? ''));
     if ($esPadre === 0 && $ruta === '') {
         throw new InvalidArgumentException('La ruta es obligatoria para opciones de menú');
+    }
+    if ($esPadre === 0 && $ruta !== '') {
+        $resolved = grooflow_menu_resolve_ruta($ruta);
+        $ruta = $resolved['ruta'];
+        if ($moduloKey === '' && $resolved['modulo_key'] !== '') {
+            $moduloKey = $resolved['modulo_key'];
+        }
     }
     $orden = (int) ($data['orden'] ?? 0);
     if ($orden <= 0) {
@@ -439,6 +480,14 @@ function grooflow_menu_update(PDO $pdo, int $id, array $data): array
         : trim((string) ($current['icon_color'] ?? ''));
     $ruta = array_key_exists('ruta', $data) ? trim((string) $data['ruta']) : (string) ($current['ruta'] ?? '');
     $moduloKey = trim((string) ($data['modulo_key'] ?? $current['modulo_key'] ?? ''));
+    $esPadreCurrent = (int) ($current['es_padre'] ?? 0);
+    if ($esPadreCurrent === 0 && $ruta !== '') {
+        $resolved = grooflow_menu_resolve_ruta($ruta);
+        $ruta = $resolved['ruta'];
+        if ($moduloKey === '' && $resolved['modulo_key'] !== '') {
+            $moduloKey = $resolved['modulo_key'];
+        }
+    }
     $estado = (string) ($data['estado'] ?? $current['estado'] ?? 'activo');
     $padreId = array_key_exists('padre_id', $data) ? (int) $data['padre_id'] : (int) ($current['padre_id'] ?? 0);
     $orden = array_key_exists('orden', $data) ? (int) $data['orden'] : (int) ($current['orden'] ?? 0);
