@@ -49,9 +49,115 @@ function grooflow_access_context(PDO $pdo): array
             'allSedes' => !empty($profile['allSedes']),
             'sedes' => $profile['sedes'] ?? [],
             'permissions' => grooflow_menu_permissions_for_nivel($pdo, (int) ($row['nivel_id'] ?? 0)),
+            'role' => (string) ($profile['role'] ?? ''),
+            'nivelNombre' => (string) ($profile['nivelNombre'] ?? ''),
+            'roleLabel' => (string) ($profile['roleLabel'] ?? ''),
         ];
     }
     return $cache[$id];
+}
+
+/** Normaliza texto para comparar nivel/rol (sin acentos). */
+function grooflow_petty_cash_identity_blob(array $ctx): string
+{
+    $raw = strtolower(trim(
+        (string) ($ctx['role'] ?? '') . ' ' .
+        (string) ($ctx['nivelNombre'] ?? '') . ' ' .
+        (string) ($ctx['roleLabel'] ?? '')
+    ));
+    $map = ['á' => 'a', 'é' => 'e', 'í' => 'i', 'ó' => 'o', 'ú' => 'u', 'ü' => 'u', 'ñ' => 'n'];
+
+    return strtr($raw, $map);
+}
+
+/** Ve fondos de otros responsables (Auditoría, Contabilidad, Jefes, Gerencia). */
+function grooflow_petty_cash_can_view_all(array $ctx): bool
+{
+    if (!empty($ctx['admin'])) return true;
+    $role = strtolower(trim((string) ($ctx['role'] ?? '')));
+    if (in_array($role, ['auditoria', 'admin', 'super_admin', 'manager'], true)) return true;
+    $blob = grooflow_petty_cash_identity_blob($ctx);
+    foreach (['auditor', 'auditoria', 'contabilidad', 'contador', 'jefes', 'jefe', 'gerencia', 'gerente', 'manager'] as $hint) {
+        if ($hint !== '' && str_contains($blob, $hint)) return true;
+    }
+    $perms = $ctx['permissions'] ?? [];
+    if (!empty($perms['Auditoría']) && !empty($perms['Caja Chica'])) return true;
+
+    return false;
+}
+
+/** Aprueba / dotación / refuerzo (Auditoría + admin). */
+function grooflow_petty_cash_can_audit(array $ctx): bool
+{
+    if (!empty($ctx['admin'])) return true;
+    $role = strtolower(trim((string) ($ctx['role'] ?? '')));
+    if (in_array($role, ['auditoria', 'admin', 'super_admin'], true)) return true;
+    $blob = grooflow_petty_cash_identity_blob($ctx);
+    foreach (['auditor', 'auditoria'] as $hint) {
+        if (str_contains($blob, $hint)) return true;
+    }
+    $perms = $ctx['permissions'] ?? [];
+    if (!empty($perms['Auditoría']) && !empty($perms['Caja Chica'])) return true;
+
+    return false;
+}
+
+function grooflow_petty_cash_row_in_scope(array $ctx, array $row): bool
+{
+    if (grooflow_petty_cash_can_view_all($ctx)) {
+        if (!empty($ctx['allSedes'])) return true;
+
+        return grooflow_row_in_scope($ctx, $row);
+    }
+    $uid = (string) ($ctx['id'] ?? '');
+    $cid = trim((string) ($row['custodianId'] ?? ''));
+    if ($cid !== '') return $cid === $uid;
+    $owner = trim((string) ($row['userId'] ?? ''));
+
+    return $owner !== '' && $owner === $uid;
+}
+
+/**
+ * Impide que un responsable auto-apruebe o edite movimientos ajenos.
+ *
+ * @param list<array<string, mixed>> $before
+ * @param list<array<string, mixed>> $after
+ */
+function grooflow_assert_petty_cash_write(array $ctx, array $before, array $after): void
+{
+    $byId = [];
+    foreach ($before as $row) {
+        if (is_array($row) && isset($row['id'])) $byId[(string) $row['id']] = $row;
+    }
+    $canAudit = grooflow_petty_cash_can_audit($ctx);
+    $canViewAll = grooflow_petty_cash_can_view_all($ctx);
+    $uid = (string) ($ctx['id'] ?? '');
+
+    foreach ($after as $row) {
+        if (!is_array($row)) continue;
+        $id = (string) ($row['id'] ?? '');
+        $prev = $byId[$id] ?? null;
+        $cid = trim((string) ($row['custodianId'] ?? ($prev['custodianId'] ?? '')));
+        if ($cid === '') $cid = trim((string) ($row['userId'] ?? ($prev['userId'] ?? '')));
+
+        if (!$canViewAll && $cid !== '' && $cid !== $uid) {
+            throw new RuntimeException('Sin permiso para modificar movimientos de otro responsable');
+        }
+
+        $prevStatus = is_array($prev) ? (string) ($prev['status'] ?? '') : '';
+        $nextStatus = (string) ($row['status'] ?? '');
+        if ($prevStatus !== $nextStatus && in_array($nextStatus, ['approved', 'rejected'], true) && !$canAudit) {
+            throw new RuntimeException('Sin permiso para aprobar o rechazar movimientos de caja chica');
+        }
+        if (
+            !$canAudit
+            && is_array($prev)
+            && in_array($prevStatus, ['approved', 'rejected'], true)
+            && $nextStatus !== $prevStatus
+        ) {
+            throw new RuntimeException('Sin permiso para alterar un movimiento ya auditado');
+        }
+    }
 }
 
 function grooflow_resource_allowed(array $ctx, string $key, bool $write = false): bool
@@ -100,6 +206,9 @@ function grooflow_project_resource(array $ctx, string $key, mixed $value): mixed
 {
     if ($ctx['admin']) return $value;
     if ($key === 'data:users') {
+        // Elevados de caja chica necesitan el directorio para elegir responsables.
+        if (grooflow_petty_cash_can_view_all($ctx)) return $value;
+
         return array_values(array_filter(is_array($value) ? $value : [], fn ($u) => (string) ($u['id'] ?? '') === $ctx['id']));
     }
     if ($key === 'data:roles') return $value; // Permission definitions contain no credentials.
@@ -118,6 +227,9 @@ function grooflow_project_resource(array $ctx, string $key, mixed $value): mixed
             if (isset($value[$field])) $out[$field] = array_values(array_filter($value[$field], fn ($r) => in_array($r[$ref] ?? null, $ids, true)));
         }
         return $out;
+    }
+    if ($key === 'data:pettyCash' && array_is_list($value)) {
+        return array_values(array_filter($value, fn ($r) => is_array($r) && grooflow_petty_cash_row_in_scope($ctx, $r)));
     }
     if (array_is_list($value)) return array_values(array_filter($value, fn ($r) => is_array($r) && grooflow_row_in_scope($ctx, $r)));
     // Object datasets: expose scoped record arrays only; credentials and global settings stay server-owned.

@@ -90,6 +90,11 @@ function grooflow_write_resource(PDO $pdo, string $key, mixed $incoming, ?string
         if ($revision === null || !hash_equals(grooflow_revision($visible), $revision)) throw new GrooflowConflict('Los datos cambiaron. Recarga antes de guardar; tu borrador se conserva.');
         foreach (grooflow_required_actions($visible, $incoming) as $action) grooflow_assert_resource_action($pdo, $key, $action);
         grooflow_validate_resource($key, $incoming);
+        if ($key === 'data:pettyCash') {
+            $beforeList = is_array($visible) && array_is_list($visible) ? $visible : [];
+            $afterList = is_array($incoming) && array_is_list($incoming) ? $incoming : [];
+            grooflow_assert_petty_cash_write($ctx, $beforeList, $afterList);
+        }
         $global = in_array($key, ['data:treasuryBankBalance', 'data:treasuryUsdBalance', 'data:providers', 'data:products', 'data:chartOfAccounts', 'settings:config', 'settings:theme', 'settings:alertThresholds', 'settings:alertReadState'], true);
         $value = $incoming;
         if (!$ctx['admin'] && !$ctx['allSedes'] && !$global) {
