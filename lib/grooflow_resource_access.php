@@ -77,11 +77,13 @@ function grooflow_petty_cash_can_view_all(array $ctx): bool
     $role = strtolower(trim((string) ($ctx['role'] ?? '')));
     if (in_array($role, ['auditoria', 'admin', 'super_admin', 'manager'], true)) return true;
     $blob = grooflow_petty_cash_identity_blob($ctx);
-    foreach (['auditor', 'auditoria', 'contabilidad', 'contador', 'jefes', 'jefe', 'gerencia', 'gerente', 'manager'] as $hint) {
+    foreach (['auditor', 'auditoria', 'contabilidad', 'contador', 'contadur', 'jefes', 'jefe', 'gerencia', 'gerente', 'manager'] as $hint) {
         if ($hint !== '' && str_contains($blob, $hint)) return true;
     }
     $perms = $ctx['permissions'] ?? [];
     if (!empty($perms['Auditoría']) && !empty($perms['Caja Chica'])) return true;
+    // Perfil Contabilidad (menú Gestión) aunque el nivel no traiga la palabra en el nombre.
+    if (!empty($perms['Contabilidad'])) return true;
 
     return false;
 }
