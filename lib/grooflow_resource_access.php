@@ -215,7 +215,22 @@ function grooflow_project_resource(array $ctx, string $key, mixed $value): mixed
     }
     if ($key === 'data:roles') return $value; // Permission definitions contain no credentials.
     if (str_starts_with($key, 'settings:')) $value = grooflow_redact_secret_fields($value);
-    if ($ctx['allSedes'] || in_array($key, ['data:treasuryBankBalance', 'data:treasuryUsdBalance', 'data:providers', 'data:products', 'data:chartOfAccounts', 'settings:config', 'settings:theme', 'settings:alertThresholds', 'settings:alertReadState'], true)) return $value;
+    // Catálogos y ajustes globales compartidos (no filtrar por sede).
+    // settings:system incluye providers.categories/areas usados en Proveedores por todos los perfiles.
+    if ($ctx['allSedes'] || in_array($key, [
+        'data:treasuryBankBalance',
+        'data:treasuryUsdBalance',
+        'data:providers',
+        'data:products',
+        'data:chartOfAccounts',
+        'settings:config',
+        'settings:system',
+        'settings:theme',
+        'settings:alertThresholds',
+        'settings:alertReadState',
+    ], true)) {
+        return $value;
+    }
     if ($key === 'data:sedes') return array_values(array_filter(is_array($value) ? $value : [], fn ($s) => in_array(is_string($s) ? $s : ($s['name'] ?? $s['nombre'] ?? ''), $ctx['sedes'], true)));
     if (!is_array($value)) return null;
     if ($key === 'data:fleet' || $key === 'data:inventory') {

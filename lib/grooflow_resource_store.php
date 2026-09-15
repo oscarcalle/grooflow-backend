@@ -95,7 +95,18 @@ function grooflow_write_resource(PDO $pdo, string $key, mixed $incoming, ?string
             $afterList = is_array($incoming) && array_is_list($incoming) ? $incoming : [];
             grooflow_assert_petty_cash_write($ctx, $beforeList, $afterList);
         }
-        $global = in_array($key, ['data:treasuryBankBalance', 'data:treasuryUsdBalance', 'data:providers', 'data:products', 'data:chartOfAccounts', 'settings:config', 'settings:theme', 'settings:alertThresholds', 'settings:alertReadState'], true);
+        $global = in_array($key, [
+            'data:treasuryBankBalance',
+            'data:treasuryUsdBalance',
+            'data:providers',
+            'data:products',
+            'data:chartOfAccounts',
+            'settings:config',
+            'settings:system',
+            'settings:theme',
+            'settings:alertThresholds',
+            'settings:alertReadState',
+        ], true);
         $value = $incoming;
         if (!$ctx['admin'] && !$ctx['allSedes'] && !$global) {
             $projected = grooflow_project_resource($ctx, $key, $incoming);
