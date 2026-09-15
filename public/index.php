@@ -946,5 +946,59 @@ function grooflow_dispatch(PDO $pdo): void
         }
     }
 
+    // --- Fase 2: asignaciones colaborador ↔ centro de costo ---
+    if ($path === '/cost-centers/assignments/collaborators' && $method === 'GET') {
+        $page = grooflow_ccc_collaborators_page($pdo, [
+            'page' => $_GET['page'] ?? 1,
+            'pageSize' => $_GET['pageSize'] ?? 25,
+            'search' => $_GET['search'] ?? '',
+            'assignment' => $_GET['assignment'] ?? 'all',
+        ]);
+        api_json_response(['ok' => true] + $page);
+        return;
+    }
+    if ($path === '/cost-centers/assignments' && $method === 'GET') {
+        $cid = (string) ($_GET['colaborador_id'] ?? '');
+        if ($cid === '') {
+            api_json_response(['ok' => false, 'error' => 'colaborador_id obligatorio'], 400);
+            return;
+        }
+        $onlyActive = isset($_GET['active']);
+        api_json_response([
+            'ok' => true,
+            'colaborador_id' => grooflow_ccc_normalize_colaborador_id($cid),
+            'items' => grooflow_ccc_list($pdo, $cid, $onlyActive),
+        ]);
+        return;
+    }
+    if ($path === '/cost-centers/assignments/resolve' && $method === 'GET') {
+        $cid = (string) ($_GET['colaborador_id'] ?? '');
+        $fecha = (string) ($_GET['fecha'] ?? date('Y-m-d'));
+        if ($cid === '') {
+            api_json_response(['ok' => false, 'error' => 'colaborador_id obligatorio'], 400);
+            return;
+        }
+        try {
+            api_json_response(['ok' => true] + grooflow_ccc_resolve($pdo, $cid, $fecha));
+        } catch (InvalidArgumentException $e) {
+            api_json_response(['ok' => false, 'error' => $e->getMessage()], 400);
+        }
+        return;
+    }
+    if ($path === '/cost-centers/assignments' && $method === 'POST') {
+        try {
+            $result = grooflow_ccc_replace_set($pdo, api_request_json());
+            api_json_response(['ok' => true] + $result);
+        } catch (InvalidArgumentException $e) {
+            api_json_response(['ok' => false, 'error' => $e->getMessage()], 400);
+        }
+        return;
+    }
+    if (preg_match('#^/cost-centers/assignments/(\d+)$#', $path, $m) && $method === 'DELETE') {
+        grooflow_ccc_deactivate_line($pdo, (int) $m[1]);
+        api_json_response(['ok' => true]);
+        return;
+    }
+
     api_json_response(['ok' => false, 'error' => 'Ruta no encontrada'], 404);
 }
