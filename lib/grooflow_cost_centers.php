@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 /**
  * Módulo maestro: unidades de negocio, org (área/subárea/cargo), centros de costo.
- * Fase 1: catálogos + CC. Asignaciones/reglas/gastos en fases siguientes.
+ * Fases 1–2: catálogos + asignaciones. Fases 3–8: ops (reglas/gastos/distribución/P&L).
  * Migraciones solo aditivas (CREATE IF NOT EXISTS + seeds idempotentes).
  */
+
+require_once __DIR__ . '/grooflow_cost_centers_ops.php';
 
 function grooflow_cost_centers_ensure_schema(PDO $pdo): void
 {
@@ -115,7 +117,7 @@ function grooflow_cost_centers_ensure_schema(PDO $pdo): void
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ");
 
-    // Placeholder para fases siguientes (no usado aún; evita migraciones futuras disruptivas).
+    // Placeholder histórico (ahora en uso fase 2).
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS grooflow_colaborador_centros_costo (
             id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -136,6 +138,7 @@ function grooflow_cost_centers_ensure_schema(PDO $pdo): void
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ");
 
+    grooflow_cost_centers_ops_ensure_schema($pdo);
     grooflow_cost_centers_seed_catalogs($pdo);
 }
 
@@ -704,6 +707,15 @@ function grooflow_cost_centers_dashboard_stats(PDO $pdo): array
     $cargos = (int) $pdo->query("SELECT COUNT(*) FROM grooflow_org_cargos WHERE is_deleted=0 AND estado='activo'")->fetchColumn();
     $byTipo = $pdo->query("SELECT tipo, COUNT(*) AS c FROM grooflow_centros_costo WHERE is_deleted=0 AND estado='activo' GROUP BY tipo")->fetchAll(PDO::FETCH_KEY_PAIR) ?: [];
     $asig = (int) $pdo->query("SELECT COUNT(DISTINCT colaborador_id) FROM grooflow_colaborador_centros_costo WHERE is_deleted=0 AND estado='activo'")->fetchColumn();
+    $reglas = (int) $pdo->query("SELECT COUNT(*) FROM grooflow_reglas_distribucion WHERE is_deleted=0 AND estado='activo'")->fetchColumn();
+    $pend = (int) $pdo->query("SELECT COUNT(*) FROM grooflow_gastos_cc WHERE is_deleted=0 AND estado='pendiente'")->fetchColumn();
+    $dist = (int) $pdo->query("SELECT COUNT(*) FROM grooflow_gastos_cc WHERE is_deleted=0 AND estado='distribuido'")->fetchColumn();
+    $periodo = date('Y-m');
+    $montoDist = (float) $pdo->query("
+        SELECT COALESCE(SUM(d.monto),0) FROM grooflow_gasto_distribucion d
+        JOIN grooflow_gastos_cc g ON g.id=d.gasto_id AND g.is_deleted=0 AND g.estado='distribuido'
+        WHERE d.is_reversed=0 AND g.periodo=" . $pdo->quote($periodo) . "
+    ")->fetchColumn();
 
     return [
         'centros_activos' => $cc,
@@ -711,10 +723,13 @@ function grooflow_cost_centers_dashboard_stats(PDO $pdo): array
         'areas' => $areas,
         'cargos' => $cargos,
         'colaboradores_asignados' => $asig,
+        'reglas_activas' => $reglas,
         'por_tipo' => $byTipo,
-        'gastos_pendientes' => 0,
-        'gastos_distribuidos' => 0,
-        'nota' => 'Fase 2: asignaciones colaborador↔CC. Gastos/reglas en fases siguientes.',
+        'gastos_pendientes' => $pend,
+        'gastos_distribuidos' => $dist,
+        'monto_distribuido_periodo' => round($montoDist, 2),
+        'periodo' => $periodo,
+        'nota' => 'Fases 1–8 activas: catálogos, asignaciones, reglas, gastos, distribución y feed P&L.',
     ];
 }
 

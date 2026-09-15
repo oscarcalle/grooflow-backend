@@ -1000,5 +1000,148 @@ function grooflow_dispatch(PDO $pdo): void
         return;
     }
 
+  // Route /cost-centers/rules/simulate before /rules/{id}
+  if ($path === '/cost-centers/rules/simulate' && $method === 'POST') {
+        $body = api_request_json();
+        try {
+            api_json_response(['ok' => true] + grooflow_regla_simulate(
+                $pdo,
+                (int) ($body['regla_id'] ?? 0),
+                (float) ($body['monto'] ?? 0)
+            ));
+        } catch (InvalidArgumentException $e) {
+            api_json_response(['ok' => false, 'error' => $e->getMessage()], 400);
+        }
+        return;
+    }
+    if ($path === '/cost-centers/rules' && $method === 'GET') {
+        api_json_response(['ok' => true, 'items' => grooflow_reglas_list($pdo, !isset($_GET['all']))]);
+        return;
+    }
+    if ($path === '/cost-centers/rules' && $method === 'POST') {
+        try {
+            api_json_response(['ok' => true, 'item' => grooflow_regla_save($pdo, api_request_json(), null)]);
+        } catch (InvalidArgumentException $e) {
+            api_json_response(['ok' => false, 'error' => $e->getMessage()], 400);
+        }
+        return;
+    }
+    if (preg_match('#^/cost-centers/rules/(\d+)$#', $path, $m) && $method === 'GET') {
+        $item = grooflow_regla_get($pdo, (int) $m[1]);
+        if (!$item) {
+            api_json_response(['ok' => false, 'error' => 'Regla no encontrada'], 404);
+            return;
+        }
+        api_json_response(['ok' => true, 'item' => $item]);
+        return;
+    }
+    if (preg_match('#^/cost-centers/rules/(\d+)$#', $path, $m) && ($method === 'PUT' || $method === 'PATCH')) {
+        try {
+            api_json_response(['ok' => true, 'item' => grooflow_regla_save($pdo, api_request_json(), (int) $m[1])]);
+        } catch (InvalidArgumentException $e) {
+            api_json_response(['ok' => false, 'error' => $e->getMessage()], 400);
+        }
+        return;
+    }
+    if (preg_match('#^/cost-centers/rules/(\d+)$#', $path, $m) && $method === 'DELETE') {
+        grooflow_regla_delete($pdo, (int) $m[1]);
+        api_json_response(['ok' => true]);
+        return;
+    }
+
+    if ($path === '/cost-centers/expenses/personal' && $method === 'POST') {
+        try {
+            api_json_response(['ok' => true, 'item' => grooflow_gasto_personal_create($pdo, api_request_json())]);
+        } catch (InvalidArgumentException $e) {
+            api_json_response(['ok' => false, 'error' => $e->getMessage()], 400);
+        }
+        return;
+    }
+    if ($path === '/cost-centers/expenses' && $method === 'GET') {
+        $page = grooflow_gastos_cc_page($pdo, [
+            'page' => $_GET['page'] ?? 1,
+            'pageSize' => $_GET['pageSize'] ?? 25,
+            'estado' => $_GET['estado'] ?? '',
+            'periodo' => $_GET['periodo'] ?? '',
+            'search' => $_GET['search'] ?? '',
+        ]);
+        api_json_response(['ok' => true] + $page);
+        return;
+    }
+    if ($path === '/cost-centers/expenses' && $method === 'POST') {
+        try {
+            api_json_response(['ok' => true, 'item' => grooflow_gastos_cc_save($pdo, api_request_json(), null)]);
+        } catch (InvalidArgumentException $e) {
+            api_json_response(['ok' => false, 'error' => $e->getMessage()], 400);
+        }
+        return;
+    }
+    if (preg_match('#^/cost-centers/expenses/(\d+)/distribute$#', $path, $m) && $method === 'POST') {
+        try {
+            $body = api_request_json();
+            api_json_response([
+                'ok' => true,
+                'item' => grooflow_gasto_distribute($pdo, (int) $m[1], isset($body['created_by']) ? (string) $body['created_by'] : null),
+            ]);
+        } catch (InvalidArgumentException $e) {
+            api_json_response(['ok' => false, 'error' => $e->getMessage()], 400);
+        }
+        return;
+    }
+    if (preg_match('#^/cost-centers/expenses/(\d+)/reverse$#', $path, $m) && $method === 'POST') {
+        try {
+            api_json_response(['ok' => true, 'item' => grooflow_gasto_reverse($pdo, (int) $m[1])]);
+        } catch (InvalidArgumentException $e) {
+            api_json_response(['ok' => false, 'error' => $e->getMessage()], 400);
+        }
+        return;
+    }
+    if (preg_match('#^/cost-centers/expenses/(\d+)$#', $path, $m) && $method === 'GET') {
+        $item = grooflow_gastos_cc_get($pdo, (int) $m[1]);
+        if (!$item) {
+            api_json_response(['ok' => false, 'error' => 'Gasto no encontrado'], 404);
+            return;
+        }
+        api_json_response(['ok' => true, 'item' => $item]);
+        return;
+    }
+    if (preg_match('#^/cost-centers/expenses/(\d+)$#', $path, $m) && ($method === 'PUT' || $method === 'PATCH')) {
+        try {
+            api_json_response(['ok' => true, 'item' => grooflow_gastos_cc_save($pdo, api_request_json(), (int) $m[1])]);
+        } catch (InvalidArgumentException $e) {
+            api_json_response(['ok' => false, 'error' => $e->getMessage()], 400);
+        }
+        return;
+    }
+    if (preg_match('#^/cost-centers/expenses/(\d+)$#', $path, $m) && $method === 'DELETE') {
+        try {
+            grooflow_gastos_cc_delete($pdo, (int) $m[1]);
+            api_json_response(['ok' => true]);
+        } catch (InvalidArgumentException $e) {
+            api_json_response(['ok' => false, 'error' => $e->getMessage()], 400);
+        }
+        return;
+    }
+
+    if ($path === '/cost-centers/reports' && $method === 'GET') {
+        try {
+            api_json_response(['ok' => true, 'report' => grooflow_cc_reports($pdo, [
+                'periodo' => $_GET['periodo'] ?? date('Y-m'),
+            ])]);
+        } catch (InvalidArgumentException $e) {
+            api_json_response(['ok' => false, 'error' => $e->getMessage()], 400);
+        }
+        return;
+    }
+    if ($path === '/cost-centers/pnl-feed' && $method === 'GET') {
+        try {
+            $periodo = (string) ($_GET['periodo'] ?? date('Y-m'));
+            api_json_response(['ok' => true] + grooflow_cc_pnl_feed($pdo, $periodo));
+        } catch (InvalidArgumentException $e) {
+            api_json_response(['ok' => false, 'error' => $e->getMessage()], 400);
+        }
+        return;
+    }
+
     api_json_response(['ok' => false, 'error' => 'Ruta no encontrada'], 404);
 }
