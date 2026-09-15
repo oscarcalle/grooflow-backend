@@ -21,6 +21,7 @@ require_once dirname(__DIR__) . '/lib/grooflow_audit.php';
 require_once dirname(__DIR__) . '/lib/grooflow_menu.php';
 require_once dirname(__DIR__) . '/lib/grooflow_usuario_menu.php';
 require_once dirname(__DIR__) . '/lib/grooflow_rrhh.php';
+require_once dirname(__DIR__) . '/lib/grooflow_cost_centers.php';
 require_once dirname(__DIR__) . '/lib/grooflow_lists.php';
 require_once dirname(__DIR__) . '/lib/grooflow_pipelines.php';
 
@@ -208,6 +209,9 @@ function grooflow_dispatch(PDO $pdo): void
     if (str_starts_with($path, '/catalog/')) {
         $module = str_contains($path, '/areas') ? 'Catálogo Áreas' : (str_contains($path, '/puestos') ? 'Catálogo Puestos' : 'Catálogo Turnos');
         grooflow_assert_module($pdo, [$module, 'Recursos Humanos']);
+    }
+    if (str_starts_with($path, '/cost-centers')) {
+        grooflow_assert_module($pdo, ['Centros de Costos', 'Contabilidad', 'Caja Chica']);
     }
 
     if ($path === '/bootstrap' && $method === 'GET') {
@@ -867,6 +871,79 @@ function grooflow_dispatch(PDO $pdo): void
         api_json_response(['ok' => true]);
 
         return;
+    }
+
+    // --- Centros de costos / org maestro (Fase 1) ---
+    if ($path === '/cost-centers/stats' && $method === 'GET') {
+        api_json_response(['ok' => true, 'stats' => grooflow_cost_centers_dashboard_stats($pdo)]);
+        return;
+    }
+    if ($path === '/cost-centers/seed-sedes' && $method === 'POST') {
+        $body = api_request_json();
+        $sedes = $body['sedes'] ?? [];
+        if (!is_array($sedes)) {
+            $sedes = [];
+        }
+        $created = grooflow_cost_centers_ensure_for_sedes($pdo, array_map('strval', $sedes));
+        api_json_response(['ok' => true, 'created' => $created, 'items' => grooflow_centros_costo_list($pdo, false)]);
+        return;
+    }
+
+    $ccCatalogs = [
+        'business-units' => [
+            'list' => fn () => grooflow_unidades_negocio_list($pdo, !isset($_GET['all'])),
+            'save' => fn ($d, $id) => grooflow_unidades_negocio_save($pdo, $d, $id),
+            'delete' => fn ($id) => grooflow_unidades_negocio_delete($pdo, $id),
+        ],
+        'areas' => [
+            'list' => fn () => grooflow_org_areas_list($pdo, !isset($_GET['all'])),
+            'save' => fn ($d, $id) => grooflow_org_areas_save($pdo, $d, $id),
+            'delete' => fn ($id) => grooflow_org_areas_delete($pdo, $id),
+        ],
+        'subareas' => [
+            'list' => function () use ($pdo) {
+                $areaId = isset($_GET['area_id']) ? (int) $_GET['area_id'] : null;
+                return grooflow_org_subareas_list($pdo, !isset($_GET['all']), $areaId ?: null);
+            },
+            'save' => fn ($d, $id) => grooflow_org_subareas_save($pdo, $d, $id),
+            'delete' => fn ($id) => grooflow_org_subareas_delete($pdo, $id),
+        ],
+        'positions' => [
+            'list' => function () use ($pdo) {
+                $areaId = isset($_GET['area_id']) ? (int) $_GET['area_id'] : null;
+                return grooflow_org_cargos_list($pdo, !isset($_GET['all']), $areaId ?: null);
+            },
+            'save' => fn ($d, $id) => grooflow_org_cargos_save($pdo, $d, $id),
+            'delete' => fn ($id) => grooflow_org_cargos_delete($pdo, $id),
+        ],
+        'centers' => [
+            'list' => function () use ($pdo) {
+                $sede = isset($_GET['sede']) ? (string) $_GET['sede'] : null;
+                return grooflow_centros_costo_list($pdo, !isset($_GET['all']), $sede);
+            },
+            'save' => fn ($d, $id) => grooflow_centros_costo_save($pdo, $d, $id),
+            'delete' => fn ($id) => grooflow_centros_costo_delete($pdo, $id),
+        ],
+    ];
+    foreach ($ccCatalogs as $slug => $handlers) {
+        $base = '/cost-centers/' . $slug;
+        if ($path === $base && $method === 'GET') {
+            api_json_response(['ok' => true, 'items' => $handlers['list']()]);
+            return;
+        }
+        if ($path === $base && $method === 'POST') {
+            api_json_response(['ok' => true, 'item' => $handlers['save'](api_request_json(), null)]);
+            return;
+        }
+        if (preg_match('#^' . preg_quote($base, '#') . '/(\d+)$#', $path, $m) && ($method === 'PUT' || $method === 'PATCH')) {
+            api_json_response(['ok' => true, 'item' => $handlers['save'](api_request_json(), (int) $m[1])]);
+            return;
+        }
+        if (preg_match('#^' . preg_quote($base, '#') . '/(\d+)$#', $path, $m) && $method === 'DELETE') {
+            $handlers['delete']((int) $m[1]);
+            api_json_response(['ok' => true]);
+            return;
+        }
     }
 
     api_json_response(['ok' => false, 'error' => 'Ruta no encontrada'], 404);

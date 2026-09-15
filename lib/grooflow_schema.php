@@ -152,6 +152,9 @@ function grooflow_ensure_schema(PDO $pdo): void
     require_once __DIR__ . '/grooflow_rrhh.php';
     grooflow_rrhh_ensure_schema($pdo);
 
+    require_once __DIR__ . '/grooflow_cost_centers.php';
+    grooflow_cost_centers_ensure_schema($pdo);
+
     $pdo->exec("CREATE TABLE IF NOT EXISTS grooflow_write_lock (id INT PRIMARY KEY) ENGINE=InnoDB");
     $pdo->exec("INSERT IGNORE INTO grooflow_write_lock (id) VALUES (1)");
     grooflow_seed_roles($pdo);
@@ -195,7 +198,7 @@ function grooflow_default_roles(): array
         'Dashboard' => true, 'Alertas' => true, 'Analítica' => true, 'Finanzas' => true,
         'Tesorería' => true, 'Transacciones' => true, 'Flujo de Caja' => true,
         'Estado de Resultados' => true, 'Honorarios' => true, 'Cuentas por Pagar' => true,
-        'Caja Chica' => true, 'Compras' => true, 'Productos' => true, 'Proveedores' => true,
+        'Caja Chica' => true, 'Centros de Costos' => true, 'Compras' => true, 'Productos' => true, 'Proveedores' => true,
         'Contabilidad' => true, 'Gestión Vehicular' => true, 'Gestión de Inventario' => true,
         'Asistencia' => true, 'Turnos' => true, 'Accidentes de Trabajo' => true,
         'Entrega de Uniformes' => true, 'Reportes' => true, 'Auditoría' => true, 'Conciliación' => true,
