@@ -78,6 +78,8 @@ function grooflow_menu_default_icon_color(string $moduloKey): string
         'Transacciones' => 'text-emerald-400 group-hover/btn:text-emerald-300',
         'Flujo de Caja' => 'text-cyan-400 group-hover/btn:text-cyan-300',
         'Estado de Resultados' => 'text-pink-400 group-hover/btn:text-pink-300',
+        'Resultado por Flujo' => 'text-pink-400 group-hover/btn:text-pink-300',
+        'P&L Gerencial' => 'text-emerald-400 group-hover/btn:text-emerald-300',
         'Reportes' => 'text-amber-400 group-hover/btn:text-amber-300',
         'Caja Chica' => 'text-teal-400 group-hover/btn:text-teal-300',
         'Centros de Costos' => 'text-cyan-400 group-hover/btn:text-cyan-300',
@@ -117,7 +119,8 @@ function grooflow_menu_default_leaves(): array
         ['section' => 'Finanzas', 'label' => 'Tesorería', 'ruta' => '/tesoreria', 'modulo_key' => 'Tesorería', 'icono' => 'fa-landmark'],
         ['section' => 'Finanzas', 'label' => 'Transacciones', 'ruta' => '/transacciones', 'modulo_key' => 'Transacciones', 'icono' => 'fa-right-left'],
         ['section' => 'Finanzas', 'label' => 'Flujo de Caja', 'ruta' => '/flujo-caja', 'modulo_key' => 'Flujo de Caja', 'icono' => 'fa-water'],
-        ['section' => 'Finanzas', 'label' => 'Estado de Resultados', 'ruta' => '/estado-resultados', 'modulo_key' => 'Estado de Resultados', 'icono' => 'fa-chart-pie'],
+        ['section' => 'Finanzas', 'label' => 'Resultado por Flujo', 'ruta' => '/estado-resultados', 'modulo_key' => 'Resultado por Flujo', 'icono' => 'fa-chart-pie'],
+        ['section' => 'Finanzas', 'label' => 'P&L Gerencial', 'ruta' => '/pnl-gerencial', 'modulo_key' => 'P&L Gerencial', 'icono' => 'fa-sitemap'],
         ['section' => 'Finanzas', 'label' => 'Reportes', 'ruta' => '/reportes', 'modulo_key' => 'Reportes', 'icono' => 'fa-file-lines'],
         ['section' => 'Finanzas', 'label' => 'Caja Chica', 'ruta' => '/caja-chica', 'modulo_key' => 'Caja Chica', 'icono' => 'fa-wallet'],
         ['section' => 'Finanzas', 'label' => 'Centros de Costos', 'ruta' => '/centros-costos', 'modulo_key' => 'Centros de Costos', 'icono' => 'fa-diagram-project'],
@@ -793,7 +796,7 @@ function grooflow_menu_permissions_for_nivel(PDO $pdo, int $nivelId): array
         $permissions['Alertas'] = true;
     }
 
-    $financeChildren = ['Tesorería', 'Transacciones', 'Flujo de Caja', 'Estado de Resultados', 'Honorarios', 'Cuentas por Pagar', 'Caja Chica', 'Centros de Costos', 'Contabilidad', 'Reportes'];
+    $financeChildren = ['Tesorería', 'Transacciones', 'Flujo de Caja', 'Resultado por Flujo', 'P&L Gerencial', 'Honorarios', 'Cuentas por Pagar', 'Caja Chica', 'Centros de Costos', 'Contabilidad', 'Reportes'];
     foreach ($financeChildren as $child) {
         if ($permissions[$child] ?? false) {
             $permissions['Finanzas'] = true;

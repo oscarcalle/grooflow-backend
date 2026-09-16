@@ -22,6 +22,7 @@ require_once dirname(__DIR__) . '/lib/grooflow_menu.php';
 require_once dirname(__DIR__) . '/lib/grooflow_usuario_menu.php';
 require_once dirname(__DIR__) . '/lib/grooflow_rrhh.php';
 require_once dirname(__DIR__) . '/lib/grooflow_cost_centers.php';
+require_once dirname(__DIR__) . '/lib/grooflow_mgr_pnl.php';
 require_once dirname(__DIR__) . '/lib/grooflow_lists.php';
 require_once dirname(__DIR__) . '/lib/grooflow_pipelines.php';
 
@@ -1140,6 +1141,101 @@ function grooflow_dispatch(PDO $pdo): void
         } catch (InvalidArgumentException $e) {
             api_json_response(['ok' => false, 'error' => $e->getMessage()], 400);
         }
+        return;
+    }
+
+    // --- Contabilidad gerencial / P&L Gerencial ---
+    if ($path === '/mgr-pnl/stats' && $method === 'GET') {
+        api_json_response(['ok' => true, 'stats' => grooflow_mgr_dashboard($pdo)]);
+        return;
+    }
+    if ($path === '/mgr-pnl/naturalezas' && $method === 'GET') {
+        api_json_response(['ok' => true, 'items' => grooflow_mgr_naturalezas_list($pdo)]);
+        return;
+    }
+    if ($path === '/mgr-pnl/structure' && $method === 'GET') {
+        api_json_response(['ok' => true, 'items' => grooflow_mgr_pnl_lineas_list($pdo)]);
+        return;
+    }
+    if ($path === '/mgr-pnl/drivers' && $method === 'GET') {
+        api_json_response(['ok' => true, 'items' => grooflow_mgr_drivers_list($pdo)]);
+        return;
+    }
+    if ($path === '/mgr-pnl/mappings' && $method === 'GET') {
+        api_json_response(['ok' => true, 'items' => grooflow_mgr_mappings_list($pdo, !isset($_GET['all']))]);
+        return;
+    }
+    if ($path === '/mgr-pnl/mappings' && $method === 'POST') {
+        try {
+            api_json_response(['ok' => true, 'item' => grooflow_mgr_mapping_save($pdo, api_request_json(), null)]);
+        } catch (InvalidArgumentException $e) {
+            api_json_response(['ok' => false, 'error' => $e->getMessage()], 400);
+        }
+        return;
+    }
+    if (preg_match('#^/mgr-pnl/mappings/(\d+)$#', $path, $m) && ($method === 'PUT' || $method === 'PATCH')) {
+        try {
+            api_json_response(['ok' => true, 'item' => grooflow_mgr_mapping_save($pdo, api_request_json(), (int) $m[1])]);
+        } catch (InvalidArgumentException $e) {
+            api_json_response(['ok' => false, 'error' => $e->getMessage()], 400);
+        }
+        return;
+    }
+    if (preg_match('#^/mgr-pnl/mappings/(\d+)$#', $path, $m) && $method === 'DELETE') {
+        grooflow_mgr_mapping_delete($pdo, (int) $m[1]);
+        api_json_response(['ok' => true]);
+        return;
+    }
+    if ($path === '/mgr-pnl/classify' && $method === 'POST') {
+        api_json_response(['ok' => true, 'proposal' => grooflow_mgr_classify_propose($pdo, api_request_json())]);
+        return;
+    }
+    if ($path === '/mgr-pnl/shared' && $method === 'GET') {
+        api_json_response(['ok' => true, 'items' => grooflow_mgr_shared_list($pdo)]);
+        return;
+    }
+    if ($path === '/mgr-pnl/shared' && $method === 'POST') {
+        try {
+            api_json_response(['ok' => true, 'item' => grooflow_mgr_shared_save($pdo, api_request_json(), null)]);
+        } catch (InvalidArgumentException $e) {
+            api_json_response(['ok' => false, 'error' => $e->getMessage()], 400);
+        }
+        return;
+    }
+    if (preg_match('#^/mgr-pnl/shared/(\d+)$#', $path, $m) && ($method === 'PUT' || $method === 'PATCH')) {
+        try {
+            api_json_response(['ok' => true, 'item' => grooflow_mgr_shared_save($pdo, api_request_json(), (int) $m[1])]);
+        } catch (InvalidArgumentException $e) {
+            api_json_response(['ok' => false, 'error' => $e->getMessage()], 400);
+        }
+        return;
+    }
+    if (preg_match('#^/mgr-pnl/shared/(\d+)$#', $path, $m) && $method === 'DELETE') {
+        grooflow_mgr_shared_delete($pdo, (int) $m[1]);
+        api_json_response(['ok' => true]);
+        return;
+    }
+    if ($path === '/mgr-pnl/qa' && $method === 'POST') {
+        $body = api_request_json();
+        $accounts = $body['chart_accounts'] ?? [];
+        if (!is_array($accounts)) {
+            $accounts = [];
+        }
+        api_json_response(['ok' => true, 'qa' => grooflow_mgr_qa_report($pdo, $accounts)]);
+        return;
+    }
+    if ($path === '/mgr-pnl/statement' && $method === 'GET') {
+        try {
+            $periodo = (string) ($_GET['periodo'] ?? date('Y-m'));
+            api_json_response(['ok' => true, 'statement' => grooflow_mgr_pnl_statement($pdo, $periodo)]);
+        } catch (InvalidArgumentException $e) {
+            api_json_response(['ok' => false, 'error' => $e->getMessage()], 400);
+        }
+        return;
+    }
+    if ($path === '/mgr-pnl/ensure' && $method === 'POST') {
+        grooflow_mgr_pnl_ensure_schema($pdo);
+        api_json_response(['ok' => true, 'stats' => grooflow_mgr_dashboard($pdo)]);
         return;
     }
 
