@@ -396,9 +396,16 @@ function grooflow_dispatch(PDO $pdo): void
         return;
     }
 
-    if (preg_match('#^/proxy/buk-pe/(test|fetch|fetch-all|probe)$#', $path, $m) && $method === 'POST') {
-        if ($m[1] === 'test' || $m[1] === 'probe') {
+    if (preg_match('#^/proxy/buk-pe/(test|fetch|fetch-all|probe|sync-usuarios)$#', $path, $m) && $method === 'POST') {
+        if ($m[1] === 'test' || $m[1] === 'probe' || $m[1] === 'sync-usuarios') {
             grooflow_assert_admin($pdo);
+        }
+        if ($m[1] === 'sync-usuarios') {
+            require_once dirname(__DIR__) . '/lib/grooflow_buk_sync.php';
+            $result = grooflow_buk_sync_usuarios($pdo, api_request_json());
+            api_json_response(['ok' => true, ...$result]);
+
+            return;
         }
         api_json_response(['ok' => true, ...grooflow_handle_buk_pe($pdo, $m[1], api_request_json())]);
 

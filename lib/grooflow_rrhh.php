@@ -43,6 +43,18 @@ function grooflow_rrhh_ensure_schema(PDO $pdo): void
             contract_type VARCHAR(120) NULL,
             start_date DATE NULL,
             end_date DATE NULL,
+            birthday DATE NULL,
+            gender VARCHAR(40) NULL,
+            nationality VARCHAR(80) NULL,
+            address VARCHAR(255) NULL,
+            distrito VARCHAR(120) NULL,
+            departamento VARCHAR(120) NULL,
+            active_since DATE NULL,
+            active_until DATE NULL,
+            pension_fund VARCHAR(120) NULL,
+            health_company VARCHAR(120) NULL,
+            payment_method VARCHAR(80) NULL,
+            bank VARCHAR(120) NULL,
             area_asistencia VARCHAR(160) NULL,
             especialidad VARCHAR(160) NULL,
             supervisor VARCHAR(190) NULL,
@@ -128,6 +140,8 @@ function grooflow_rrhh_ensure_indexes(PDO $pdo): void
     }
     $done = true;
 
+    grooflow_rrhh_ensure_extra_columns($pdo);
+
     $wanted = [
         'idx_gf_buk_emp_missing' => 'missing_from_source',
         'idx_gf_buk_emp_term' => 'is_terminated',
@@ -150,6 +164,50 @@ function grooflow_rrhh_ensure_indexes(PDO $pdo): void
         }
         try {
             $pdo->exec("ALTER TABLE grooflow_buk_empleados ADD INDEX {$name} ({$cols})");
+        } catch (Throwable $e) {
+            // ignore race / already exists
+        }
+    }
+}
+
+/** Columnas Buk.pe adicionales (personal / planilla) en instalaciones ya creadas. */
+function grooflow_rrhh_ensure_extra_columns(PDO $pdo): void
+{
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    $done = true;
+
+    $wanted = [
+        'birthday' => 'DATE NULL',
+        'gender' => 'VARCHAR(40) NULL',
+        'nationality' => 'VARCHAR(80) NULL',
+        'address' => 'VARCHAR(255) NULL',
+        'distrito' => 'VARCHAR(120) NULL',
+        'departamento' => 'VARCHAR(120) NULL',
+        'active_since' => 'DATE NULL',
+        'active_until' => 'DATE NULL',
+        'pension_fund' => 'VARCHAR(120) NULL',
+        'health_company' => 'VARCHAR(120) NULL',
+        'payment_method' => 'VARCHAR(80) NULL',
+        'bank' => 'VARCHAR(120) NULL',
+    ];
+    $existing = [];
+    try {
+        $rows = $pdo->query('SHOW COLUMNS FROM grooflow_buk_empleados')->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        foreach ($rows as $r) {
+            $existing[strtolower((string) ($r['Field'] ?? ''))] = true;
+        }
+    } catch (Throwable $e) {
+        return;
+    }
+    foreach ($wanted as $col => $def) {
+        if (isset($existing[$col])) {
+            continue;
+        }
+        try {
+            $pdo->exec("ALTER TABLE grooflow_buk_empleados ADD COLUMN {$col} {$def}");
         } catch (Throwable $e) {
             // ignore race / already exists
         }
@@ -268,6 +326,12 @@ function grooflow_rrhh_normalize_buk_pe_employee(array $raw): array
         'status' => $status,
         'isActive' => ! $isTerminated,
         'isTerminated' => $isTerminated,
+        'birthday' => grooflow_rrhh_str($raw['birthday'] ?? '') ?: null,
+        'gender' => grooflow_rrhh_str($raw['gender'] ?? '') ?: null,
+        'nationality' => grooflow_rrhh_str($raw['nationality'] ?? '') ?: null,
+        'address' => grooflow_rrhh_str($raw['address'] ?? '') ?: null,
+        'distrito' => grooflow_rrhh_str($raw['distrito'] ?? '') ?: null,
+        'departamento' => grooflow_rrhh_str($raw['departamento'] ?? '') ?: null,
         'cargo' => grooflow_rrhh_str($role['name'] ?? '') ?: null,
         'cargoCode' => grooflow_rrhh_str($role['code'] ?? '') ?: null,
         'area' => grooflow_rrhh_str($roleFamily['name'] ?? '') ?: null,
@@ -275,6 +339,12 @@ function grooflow_rrhh_normalize_buk_pe_employee(array $raw): array
         'contractType' => grooflow_rrhh_str($currentJob['contract_type'] ?? '') ?: null,
         'startDate' => grooflow_rrhh_str($currentJob['start_date'] ?? $raw['active_since'] ?? '') ?: null,
         'endDate' => $endDate !== '' ? $endDate : null,
+        'activeSince' => grooflow_rrhh_str($raw['active_since'] ?? '') ?: null,
+        'activeUntil' => grooflow_rrhh_str($raw['active_until'] ?? '') ?: null,
+        'pensionFund' => grooflow_rrhh_str($raw['pension_fund'] ?? '') ?: null,
+        'healthCompany' => grooflow_rrhh_str($raw['health_company'] ?? '') ?: null,
+        'paymentMethod' => grooflow_rrhh_str($raw['payment_method'] ?? '') ?: null,
+        'bank' => grooflow_rrhh_str($raw['bank'] ?? '') ?: null,
         'raw' => $raw,
     ];
 }
@@ -320,7 +390,11 @@ function grooflow_rrhh_row_to_app(array $row, array $opts = []): array
 {
     $includeRaw = ! empty($opts['includeRaw']);
     $payload = [];
-    if ($includeRaw && ! empty($row['payload'])) {
+    $needsPayload = $includeRaw
+        || trim((string) ($row['birthday'] ?? '')) === ''
+        || trim((string) ($row['pension_fund'] ?? '')) === ''
+        || trim((string) ($row['gender'] ?? '')) === '';
+    if ($needsPayload && ! empty($row['payload'])) {
         $decoded = grooflow_json_decode(is_string($row['payload']) ? $row['payload'] : null);
         $payload = is_array($decoded) ? $decoded : [];
     }
@@ -339,6 +413,12 @@ function grooflow_rrhh_row_to_app(array $row, array $opts = []): array
         'status' => (string) ($row['status'] ?? ''),
         'isActive' => (int) ($row['is_active'] ?? 0) === 1,
         'isTerminated' => (int) ($row['is_terminated'] ?? 0) === 1,
+        'birthday' => $row['birthday'] ?? null,
+        'gender' => $row['gender'] ?? null,
+        'nationality' => $row['nationality'] ?? null,
+        'address' => $row['address'] ?? null,
+        'distrito' => $row['distrito'] ?? null,
+        'departamento' => $row['departamento'] ?? null,
         'cargo' => $row['cargo'] ?? null,
         'cargoCode' => $row['cargo_code'] ?? null,
         'area' => $row['area'] ?? null,
@@ -346,6 +426,12 @@ function grooflow_rrhh_row_to_app(array $row, array $opts = []): array
         'contractType' => $row['contract_type'] ?? null,
         'startDate' => $row['start_date'] ?? null,
         'endDate' => $row['end_date'] ?? null,
+        'activeSince' => $row['active_since'] ?? null,
+        'activeUntil' => $row['active_until'] ?? null,
+        'pensionFund' => $row['pension_fund'] ?? null,
+        'healthCompany' => $row['health_company'] ?? null,
+        'paymentMethod' => $row['payment_method'] ?? null,
+        'bank' => $row['bank'] ?? null,
         'areaAsistencia' => $row['area_asistencia'] ?? null,
         'especialidad' => $row['especialidad'] ?? null,
         'supervisor' => $row['supervisor'] ?? null,
@@ -369,6 +455,33 @@ function grooflow_rrhh_row_to_app(array $row, array $opts = []): array
     $out['identityStatus'] = grooflow_rrhh_identity_status($out);
     if ($includeRaw) {
         $out['raw'] = $payload['raw'] ?? null;
+    }
+
+    // Hidratar campos personales/planilla desde payload si la fila es previa a la migración.
+    $rawPayload = is_array($payload['raw'] ?? null) ? $payload['raw'] : [];
+    if ($rawPayload !== []) {
+        $hydrate = [
+            'birthday' => 'birthday',
+            'gender' => 'gender',
+            'nationality' => 'nationality',
+            'address' => 'address',
+            'distrito' => 'distrito',
+            'departamento' => 'departamento',
+            'activeSince' => 'active_since',
+            'activeUntil' => 'active_until',
+            'pensionFund' => 'pension_fund',
+            'healthCompany' => 'health_company',
+            'paymentMethod' => 'payment_method',
+            'bank' => 'bank',
+        ];
+        foreach ($hydrate as $appKey => $rawKey) {
+            if (($out[$appKey] ?? null) === null || $out[$appKey] === '') {
+                $v = grooflow_rrhh_str($rawPayload[$rawKey] ?? '');
+                if ($v !== '') {
+                    $out[$appKey] = $v;
+                }
+            }
+        }
     }
 
     return $out;
@@ -399,11 +512,14 @@ function grooflow_rrhh_upsert_employees(PDO $pdo, array $employees, bool $markMi
         INSERT INTO grooflow_buk_empleados (
             buk_id, person_id, full_name, first_name, surname, document_type, document_number,
             email, personal_email, phone, status, is_active, is_terminated, cargo, cargo_code,
-            area, sede, contract_type, start_date, end_date, area_asistencia, especialidad,
+            area, sede, contract_type, start_date, end_date,
+            birthday, gender, nationality, address, distrito, departamento,
+            active_since, active_until, pension_fund, health_company, payment_method, bank,
+            area_asistencia, especialidad,
             supervisor, turno, turno_horario, turno_codigo, recinto_nombre, recinto_codigo,
             ultima_marcacion_entrada, ultima_marcacion_salida, ultima_asistencia_dia,
             asistencia_enriched, content_hash, missing_from_source, payload, first_synced_at, last_updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON DUPLICATE KEY UPDATE
             person_id = VALUES(person_id),
             full_name = VALUES(full_name),
@@ -424,6 +540,18 @@ function grooflow_rrhh_upsert_employees(PDO $pdo, array $employees, bool $markMi
             contract_type = VALUES(contract_type),
             start_date = VALUES(start_date),
             end_date = VALUES(end_date),
+            birthday = VALUES(birthday),
+            gender = VALUES(gender),
+            nationality = VALUES(nationality),
+            address = VALUES(address),
+            distrito = VALUES(distrito),
+            departamento = VALUES(departamento),
+            active_since = VALUES(active_since),
+            active_until = VALUES(active_until),
+            pension_fund = VALUES(pension_fund),
+            health_company = VALUES(health_company),
+            payment_method = VALUES(payment_method),
+            bank = VALUES(bank),
             area_asistencia = VALUES(area_asistencia),
             especialidad = VALUES(especialidad),
             supervisor = VALUES(supervisor),
@@ -469,6 +597,9 @@ function grooflow_rrhh_upsert_employees(PDO $pdo, array $employees, bool $markMi
 
         $startDate = ! empty($emp['startDate']) ? substr((string) $emp['startDate'], 0, 10) : null;
         $endDate = ! empty($emp['endDate']) ? substr((string) $emp['endDate'], 0, 10) : null;
+        $birthday = ! empty($emp['birthday']) ? substr((string) $emp['birthday'], 0, 10) : null;
+        $activeSince = ! empty($emp['activeSince']) ? substr((string) $emp['activeSince'], 0, 10) : null;
+        $activeUntil = ! empty($emp['activeUntil']) ? substr((string) $emp['activeUntil'], 0, 10) : null;
 
         $ins->execute([
             $bukId,
@@ -491,6 +622,18 @@ function grooflow_rrhh_upsert_employees(PDO $pdo, array $employees, bool $markMi
             $emp['contractType'] ?? null,
             $startDate,
             $endDate,
+            $birthday,
+            $emp['gender'] ?? null,
+            $emp['nationality'] ?? null,
+            $emp['address'] ?? null,
+            $emp['distrito'] ?? null,
+            $emp['departamento'] ?? null,
+            $activeSince,
+            $activeUntil,
+            $emp['pensionFund'] ?? null,
+            $emp['healthCompany'] ?? null,
+            $emp['paymentMethod'] ?? null,
+            $emp['bank'] ?? null,
             $emp['areaAsistencia'] ?? null,
             $emp['especialidad'] ?? null,
             $emp['supervisor'] ?? null,
@@ -947,7 +1090,7 @@ function grooflow_rrhh_list_employees(PDO $pdo, array $query): array
     $offset = ($page - 1) * $pageSize;
     $cols = $includeRaw
         ? '*'
-        : 'buk_id, person_id, full_name, first_name, surname, document_type, document_number, email, personal_email, phone, status, is_active, is_terminated, cargo, cargo_code, area, sede, contract_type, start_date, end_date, area_asistencia, especialidad, supervisor, turno, turno_horario, turno_codigo, recinto_nombre, recinto_codigo, ultima_marcacion_entrada, ultima_marcacion_salida, ultima_asistencia_dia, asistencia_enriched, content_hash, missing_from_source, linked_usuario_id, first_synced_at, last_updated_at';
+        : 'buk_id, person_id, full_name, first_name, surname, document_type, document_number, email, personal_email, phone, status, is_active, is_terminated, cargo, cargo_code, area, sede, contract_type, start_date, end_date, birthday, gender, nationality, address, distrito, departamento, active_since, active_until, pension_fund, health_company, payment_method, bank, area_asistencia, especialidad, supervisor, turno, turno_horario, turno_codigo, recinto_nombre, recinto_codigo, ultima_marcacion_entrada, ultima_marcacion_salida, ultima_asistencia_dia, asistencia_enriched, content_hash, missing_from_source, linked_usuario_id, payload, first_synced_at, last_updated_at';
     $sql = "
         SELECT {$cols} FROM grooflow_buk_empleados
         WHERE {$whereSql}
