@@ -306,11 +306,21 @@ function grooflow_rrhh_normalize_buk_pe_employee(array $raw): array
 {
     $currentJob = is_array($raw['current_job'] ?? null) ? $raw['current_job'] : [];
     $role = is_array($currentJob['role'] ?? null) ? $currentJob['role'] : [];
+    // A veces role viene como string (nombre) en respuestas antiguas.
+    if ($role === [] && is_string($currentJob['role'] ?? null)) {
+        $role = ['name' => (string) $currentJob['role']];
+    }
     $roleFamily = is_array($role['role_family'] ?? null) ? $role['role_family'] : [];
+    $boss = is_array($currentJob['boss'] ?? null) ? $currentJob['boss'] : [];
     $status = grooflow_rrhh_str($raw['status'] ?? 'desconocido') ?: 'desconocido';
     $endDate = grooflow_rrhh_str($currentJob['end_date'] ?? $raw['active_until'] ?? '');
     $fullName = grooflow_rrhh_str($raw['full_name'] ?? $raw['first_name'] ?? 'Sin nombre') ?: 'Sin nombre';
     $isTerminated = grooflow_rrhh_terminated($status) || grooflow_rrhh_end_date_passed($endDate);
+    $familyName = grooflow_rrhh_str($roleFamily['name'] ?? '') ?: null;
+    $orgAreaId = isset($currentJob['area_id']) && $currentJob['area_id'] !== '' && $currentJob['area_id'] !== null
+        ? (int) $currentJob['area_id']
+        : null;
+    $roleId = isset($role['id']) ? (int) $role['id'] : (isset($currentJob['role_id']) ? (int) $currentJob['role_id'] : null);
 
     return [
         'bukId' => (int) ($raw['id'] ?? 0),
@@ -318,33 +328,73 @@ function grooflow_rrhh_normalize_buk_pe_employee(array $raw): array
         'fullName' => $fullName,
         'firstName' => grooflow_rrhh_str($raw['first_name'] ?? '') ?: null,
         'surname' => grooflow_rrhh_str($raw['surname'] ?? '') ?: null,
+        'secondSurname' => grooflow_rrhh_str($raw['second_surname'] ?? '') ?: null,
         'documentType' => grooflow_rrhh_str($raw['document_type'] ?? '') ?: null,
-        'documentNumber' => grooflow_rrhh_str($raw['document_number'] ?? '') ?: null,
+        'documentNumber' => grooflow_rrhh_str($raw['document_number'] ?? $raw['rut'] ?? '') ?: null,
         'email' => grooflow_rrhh_str($raw['email'] ?? '') ?: null,
         'personalEmail' => grooflow_rrhh_str($raw['personal_email'] ?? '') ?: null,
         'phone' => grooflow_rrhh_str($raw['phone'] ?? $raw['office_phone'] ?? '') ?: null,
+        'officePhone' => grooflow_rrhh_str($raw['office_phone'] ?? '') ?: null,
         'status' => $status,
         'isActive' => ! $isTerminated,
         'isTerminated' => $isTerminated,
         'birthday' => grooflow_rrhh_str($raw['birthday'] ?? '') ?: null,
         'gender' => grooflow_rrhh_str($raw['gender'] ?? '') ?: null,
         'nationality' => grooflow_rrhh_str($raw['nationality'] ?? '') ?: null,
+        'countryCode' => grooflow_rrhh_str($raw['country_code'] ?? '') ?: null,
+        'civilStatus' => grooflow_rrhh_str($raw['civil_status'] ?? '') ?: null,
         'address' => grooflow_rrhh_str($raw['address'] ?? '') ?: null,
-        'distrito' => grooflow_rrhh_str($raw['distrito'] ?? '') ?: null,
+        'street' => grooflow_rrhh_str($raw['street'] ?? '') ?: null,
+        'streetNumber' => grooflow_rrhh_str($raw['street_number'] ?? '') ?: null,
+        'officeNumber' => grooflow_rrhh_str($raw['office_number'] ?? '') ?: null,
+        'city' => grooflow_rrhh_str($raw['city'] ?? '') ?: null,
+        'region' => grooflow_rrhh_str($raw['region'] ?? '') ?: null,
+        'distrito' => grooflow_rrhh_str($raw['distrito'] ?? $raw['district'] ?? '') ?: null,
         'departamento' => grooflow_rrhh_str($raw['departamento'] ?? '') ?: null,
+        'locationId' => grooflow_rrhh_str($raw['location_id'] ?? $currentJob['location_id'] ?? '') ?: null,
+        'codeSheet' => grooflow_rrhh_str($raw['code_sheet'] ?? '') ?: null,
+        'periodType' => grooflow_rrhh_str($raw['period_type'] ?? '') ?: null,
+        'university' => grooflow_rrhh_str($raw['university'] ?? '') ?: null,
+        'degree' => grooflow_rrhh_str($raw['degree'] ?? '') ?: null,
+        'privateRole' => array_key_exists('private_role', $raw) ? (bool) $raw['private_role'] : null,
         'cargo' => grooflow_rrhh_str($role['name'] ?? '') ?: null,
         'cargoCode' => grooflow_rrhh_str($role['code'] ?? '') ?: null,
-        'area' => grooflow_rrhh_str($roleFamily['name'] ?? '') ?: null,
+        'roleId' => $roleId > 0 ? $roleId : null,
+        'roleDescription' => grooflow_rrhh_str($role['description'] ?? '') ?: null,
+        'roleRequirements' => grooflow_rrhh_str($role['requirements'] ?? '') ?: null,
+        'area' => $familyName,
+        'roleFamilyId' => isset($roleFamily['id']) ? (int) $roleFamily['id'] : null,
+        'roleFamilyName' => $familyName,
+        'roleFamilyQuantity' => isset($roleFamily['quantity_of_roles']) ? (int) $roleFamily['quantity_of_roles'] : null,
+        'orgAreaId' => $orgAreaId,
+        'companyId' => isset($currentJob['company_id']) ? (int) $currentJob['company_id'] : null,
+        'weeklyHours' => isset($currentJob['weekly_hours']) ? (float) $currentJob['weekly_hours'] : null,
+        'costCenter' => grooflow_rrhh_str($currentJob['cost_center'] ?? '') ?: null,
+        'periodicity' => grooflow_rrhh_str($currentJob['periodicity'] ?? '') ?: null,
+        'frequency' => grooflow_rrhh_str($currentJob['frequency'] ?? '') ?: null,
+        'workingScheduleType' => grooflow_rrhh_str($currentJob['working_schedule_type'] ?? '') ?: null,
+        'bossId' => isset($boss['id']) ? (int) $boss['id'] : null,
+        'bossDocument' => grooflow_rrhh_str($boss['document_number'] ?? $boss['rut'] ?? '') ?: null,
+        'noticeDate' => grooflow_rrhh_str($currentJob['notice_date'] ?? '') ?: null,
+        'contractSubscriptionDate' => grooflow_rrhh_str($currentJob['contract_subscription_date'] ?? '') ?: null,
         'sede' => grooflow_rrhh_str($currentJob['recinto_primario'] ?? $raw['location_id'] ?? '') ?: null,
         'contractType' => grooflow_rrhh_str($currentJob['contract_type'] ?? '') ?: null,
         'startDate' => grooflow_rrhh_str($currentJob['start_date'] ?? $raw['active_since'] ?? '') ?: null,
         'endDate' => $endDate !== '' ? $endDate : null,
         'activeSince' => grooflow_rrhh_str($raw['active_since'] ?? '') ?: null,
         'activeUntil' => grooflow_rrhh_str($raw['active_until'] ?? '') ?: null,
+        'terminationReason' => grooflow_rrhh_str($raw['termination_reason'] ?? '') ?: null,
         'pensionFund' => grooflow_rrhh_str($raw['pension_fund'] ?? '') ?: null,
+        'pensionRegime' => grooflow_rrhh_str($raw['pension_regime'] ?? '') ?: null,
         'healthCompany' => grooflow_rrhh_str($raw['health_company'] ?? '') ?: null,
         'paymentMethod' => grooflow_rrhh_str($raw['payment_method'] ?? '') ?: null,
+        'paymentPeriod' => grooflow_rrhh_str($raw['payment_period'] ?? '') ?: null,
+        'paymentCurrency' => grooflow_rrhh_str($raw['payment_currency'] ?? '') ?: null,
+        'accountType' => grooflow_rrhh_str($raw['account_type'] ?? '') ?: null,
+        'advancePayment' => grooflow_rrhh_str($raw['advance_payment'] ?? '') ?: null,
         'bank' => grooflow_rrhh_str($raw['bank'] ?? '') ?: null,
+        'retired' => array_key_exists('retired', $raw) ? (bool) $raw['retired'] : null,
+        'retirementRegime' => grooflow_rrhh_str($raw['retirement_regime'] ?? '') ?: null,
         'raw' => $raw,
     ];
 }
@@ -390,11 +440,8 @@ function grooflow_rrhh_row_to_app(array $row, array $opts = []): array
 {
     $includeRaw = ! empty($opts['includeRaw']);
     $payload = [];
-    $needsPayload = $includeRaw
-        || trim((string) ($row['birthday'] ?? '')) === ''
-        || trim((string) ($row['pension_fund'] ?? '')) === ''
-        || trim((string) ($row['gender'] ?? '')) === '';
-    if ($needsPayload && ! empty($row['payload'])) {
+    // Payload trae raw + normalized (áreas/roles/familias enrich) necesarios para columnas.
+    if (! empty($row['payload'])) {
         $decoded = grooflow_json_decode(is_string($row['payload']) ? $row['payload'] : null);
         $payload = is_array($decoded) ? $decoded : [];
     }
@@ -457,22 +504,64 @@ function grooflow_rrhh_row_to_app(array $row, array $opts = []): array
         $out['raw'] = $payload['raw'] ?? null;
     }
 
-    // Hidratar campos personales/planilla desde payload si la fila es previa a la migración.
+    // Preferir snapshot normalizado (incluye enrich áreas/roles/familias).
+    $normalized = is_array($payload['normalized'] ?? null) ? $payload['normalized'] : [];
+    if ($normalized !== []) {
+        foreach ($normalized as $k => $v) {
+            if ($k === 'raw' || $k === 'identityStatus') {
+                continue;
+            }
+            if ($v === null || $v === '') {
+                continue;
+            }
+            if (! array_key_exists($k, $out) || $out[$k] === null || $out[$k] === '') {
+                $out[$k] = $v;
+            }
+        }
+        // Familia: mantener area alineada con roleFamilyName.
+        if (! empty($out['roleFamilyName']) && (empty($out['area']) || $out['area'] === '')) {
+            $out['area'] = $out['roleFamilyName'];
+        }
+        if (! empty($out['area']) && empty($out['roleFamilyName'])) {
+            $out['roleFamilyName'] = $out['area'];
+        }
+    }
+
+    // Hidratar campos personales/planilla desde payload.raw si la fila es previa a la migración.
     $rawPayload = is_array($payload['raw'] ?? null) ? $payload['raw'] : [];
     if ($rawPayload !== []) {
         $hydrate = [
             'birthday' => 'birthday',
             'gender' => 'gender',
             'nationality' => 'nationality',
+            'countryCode' => 'country_code',
+            'civilStatus' => 'civil_status',
             'address' => 'address',
+            'street' => 'street',
+            'streetNumber' => 'street_number',
+            'officeNumber' => 'office_number',
+            'city' => 'city',
+            'region' => 'region',
             'distrito' => 'distrito',
             'departamento' => 'departamento',
+            'codeSheet' => 'code_sheet',
+            'secondSurname' => 'second_surname',
+            'university' => 'university',
+            'degree' => 'degree',
+            'periodType' => 'period_type',
             'activeSince' => 'active_since',
             'activeUntil' => 'active_until',
+            'terminationReason' => 'termination_reason',
             'pensionFund' => 'pension_fund',
+            'pensionRegime' => 'pension_regime',
             'healthCompany' => 'health_company',
             'paymentMethod' => 'payment_method',
+            'paymentPeriod' => 'payment_period',
+            'paymentCurrency' => 'payment_currency',
+            'accountType' => 'account_type',
+            'advancePayment' => 'advance_payment',
             'bank' => 'bank',
+            'retirementRegime' => 'retirement_regime',
         ];
         foreach ($hydrate as $appKey => $rawKey) {
             if (($out[$appKey] ?? null) === null || $out[$appKey] === '') {
@@ -481,6 +570,42 @@ function grooflow_rrhh_row_to_app(array $row, array $opts = []): array
                     $out[$appKey] = $v;
                 }
             }
+        }
+        if (! array_key_exists('retired', $out) || $out['retired'] === null) {
+            if (array_key_exists('retired', $rawPayload)) {
+                $out['retired'] = (bool) $rawPayload['retired'];
+            }
+        }
+        if (! array_key_exists('privateRole', $out) || $out['privateRole'] === null) {
+            if (array_key_exists('private_role', $rawPayload)) {
+                $out['privateRole'] = (bool) $rawPayload['private_role'];
+            }
+        }
+        // Nested job ids from raw if missing.
+        $cj = is_array($rawPayload['current_job'] ?? null) ? $rawPayload['current_job'] : [];
+        if (empty($out['orgAreaId']) && isset($cj['area_id'])) {
+            $out['orgAreaId'] = (int) $cj['area_id'];
+        }
+        if (empty($out['companyId']) && isset($cj['company_id'])) {
+            $out['companyId'] = (int) $cj['company_id'];
+        }
+        if (empty($out['costCenter'])) {
+            $out['costCenter'] = grooflow_rrhh_str($cj['cost_center'] ?? '') ?: null;
+        }
+        if (empty($out['weeklyHours']) && isset($cj['weekly_hours'])) {
+            $out['weeklyHours'] = (float) $cj['weekly_hours'];
+        }
+        $role = is_array($cj['role'] ?? null) ? $cj['role'] : [];
+        if (empty($out['roleId']) && isset($role['id'])) {
+            $out['roleId'] = (int) $role['id'];
+        }
+        $rf = is_array($role['role_family'] ?? null) ? $role['role_family'] : [];
+        if (empty($out['roleFamilyId']) && isset($rf['id'])) {
+            $out['roleFamilyId'] = (int) $rf['id'];
+        }
+        if (empty($out['roleFamilyName']) && ! empty($rf['name'])) {
+            $out['roleFamilyName'] = grooflow_rrhh_str($rf['name']);
+            $out['area'] = $out['roleFamilyName'];
         }
     }
 
@@ -651,6 +776,12 @@ function grooflow_rrhh_upsert_employees(PDO $pdo, array $employees, bool $markMi
             grooflow_json_encode([
                 // Respuesta completa de Buk.pe (todos los campos de la API).
                 'raw' => $emp['raw'] ?? null,
+                // Campos normalizados + enrich (áreas/roles/familias/asistencia).
+                'normalized' => (static function (array $e) {
+                    unset($e['raw']);
+
+                    return $e;
+                })($emp),
                 // Snapshot de enriquecimiento Ctrlit (asistencia).
                 'asistencia' => [
                     'areaAsistencia' => $emp['areaAsistencia'] ?? null,
@@ -745,6 +876,168 @@ function grooflow_rrhh_enrich_with_asistencia(array $employees, array $asistenci
     return ['employees' => $out, 'matched' => $matched];
 }
 
+/**
+ * Descarga todas las páginas de un path Buk.pe (areas, roles, role_families, etc.).
+ *
+ * @return list<array<string, mixed>>
+ */
+function grooflow_buk_pe_fetch_path_all(
+    string $baseUrl,
+    string $apiToken,
+    string $pathTemplate,
+    int $pageSize = 100,
+    int $maxPages = 40
+): array {
+    $all = [];
+    $pageSize = max(25, min(100, $pageSize));
+    for ($page = 1; $page <= $maxPages; $page++) {
+        $sep = str_contains($pathTemplate, '?') ? '&' : '?';
+        $path = $pathTemplate . $sep . 'page=' . $page . '&page_size=' . $pageSize;
+        $url = grooflow_build_buk_pe_target_url($baseUrl, '', $path);
+        grooflow_assert_buk_pe_url($url);
+        $res = grooflow_proxy_fetch($url, grooflow_buk_pe_auth_headers($apiToken), 90);
+        if ($res['status'] < 200 || $res['status'] >= 300) {
+            break;
+        }
+        $json = json_decode($res['body'], true);
+        $parsed = grooflow_parse_buk_pe_page($json);
+        if ($parsed['records'] === []) {
+            break;
+        }
+        $all = array_merge($all, $parsed['records']);
+        if ($page >= (int) ($parsed['totalPages'] ?? 1)) {
+            break;
+        }
+    }
+
+    return $all;
+}
+
+/**
+ * Enriquece empleados con nombres de área org / cargo / familia desde catálogos Buk.pe.
+ *
+ * @param list<array<string, mixed>> $employees
+ * @return array{employees:list<array<string,mixed>>,areas:int,roles:int,families:int}
+ */
+function grooflow_rrhh_enrich_with_org_catalogs(
+    array $employees,
+    string $baseUrl,
+    string $apiToken
+): array {
+    $areas = [];
+    $roles = [];
+    $families = [];
+    try {
+        $areas = grooflow_buk_pe_fetch_path_all($baseUrl, $apiToken, 'organization/areas/?status=both', 100, 40);
+    } catch (Throwable $e) {
+        $areas = [];
+    }
+    try {
+        $roles = grooflow_buk_pe_fetch_path_all($baseUrl, $apiToken, 'roles', 100, 40);
+    } catch (Throwable $e) {
+        $roles = [];
+    }
+    try {
+        $families = grooflow_buk_pe_fetch_path_all($baseUrl, $apiToken, 'role_families', 100, 10);
+    } catch (Throwable $e) {
+        $families = [];
+    }
+
+    /** @var array<int, array<string, mixed>> */
+    $areasById = [];
+    foreach ($areas as $row) {
+        if (! is_array($row)) {
+            continue;
+        }
+        $id = (int) ($row['id'] ?? 0);
+        if ($id > 0) {
+            $areasById[$id] = $row;
+        }
+    }
+    /** @var array<int, array<string, mixed>> */
+    $rolesById = [];
+    foreach ($roles as $row) {
+        if (! is_array($row)) {
+            continue;
+        }
+        $id = (int) ($row['id'] ?? 0);
+        if ($id > 0) {
+            $rolesById[$id] = $row;
+        }
+    }
+    /** @var array<int, array<string, mixed>> */
+    $familiesById = [];
+    foreach ($families as $row) {
+        if (! is_array($row)) {
+            continue;
+        }
+        $id = (int) ($row['id'] ?? 0);
+        if ($id > 0) {
+            $familiesById[$id] = $row;
+        }
+    }
+
+    $out = [];
+    foreach ($employees as $emp) {
+        if (! is_array($emp)) {
+            continue;
+        }
+        $areaId = (int) ($emp['orgAreaId'] ?? 0);
+        if ($areaId > 0 && isset($areasById[$areaId])) {
+            $a = $areasById[$areaId];
+            $emp['orgAreaName'] = grooflow_rrhh_str($a['name'] ?? '') ?: ($emp['orgAreaName'] ?? null);
+            $emp['orgAreaStatus'] = grooflow_rrhh_str($a['status'] ?? '') ?: null;
+            $emp['orgAreaCostCenter'] = grooflow_rrhh_str($a['cost_center'] ?? '') ?: null;
+            $emp['orgAreaDepth'] = isset($a['depth'])
+                ? (int) $a['depth']
+                : (isset($a['first_level']) ? (int) $a['first_level'] : null);
+            $parent = is_array($a['parent_area'] ?? null) ? $a['parent_area'] : [];
+            $emp['orgAreaParentName'] = grooflow_rrhh_str($parent['name'] ?? '') ?: null;
+        }
+
+        $roleId = (int) ($emp['roleId'] ?? 0);
+        if ($roleId > 0 && isset($rolesById[$roleId])) {
+            $r = $rolesById[$roleId];
+            $emp['cargo'] = grooflow_rrhh_str($r['name'] ?? '') ?: ($emp['cargo'] ?? null);
+            $emp['cargoCode'] = grooflow_rrhh_str($r['code'] ?? '') ?: ($emp['cargoCode'] ?? null);
+            $emp['roleDescription'] = grooflow_rrhh_str($r['description'] ?? '') ?: ($emp['roleDescription'] ?? null);
+            $emp['roleRequirements'] = grooflow_rrhh_str($r['requirements'] ?? '') ?: ($emp['roleRequirements'] ?? null);
+            $rf = is_array($r['role_family'] ?? null) ? $r['role_family'] : [];
+            $rfId = isset($rf['id']) ? (int) $rf['id'] : (isset($r['role_family_id']) ? (int) $r['role_family_id'] : 0);
+            if ($rfId > 0) {
+                $emp['roleFamilyId'] = $rfId;
+            }
+            $rfName = grooflow_rrhh_str($rf['name'] ?? '') ?: null;
+            if ($rfName) {
+                $emp['roleFamilyName'] = $rfName;
+                $emp['area'] = $rfName;
+            }
+            if (isset($rf['quantity_of_roles'])) {
+                $emp['roleFamilyQuantity'] = (int) $rf['quantity_of_roles'];
+            }
+        }
+
+        $famId = (int) ($emp['roleFamilyId'] ?? 0);
+        if ($famId > 0 && isset($familiesById[$famId])) {
+            $f = $familiesById[$famId];
+            $emp['roleFamilyName'] = grooflow_rrhh_str($f['name'] ?? '') ?: ($emp['roleFamilyName'] ?? null);
+            $emp['area'] = $emp['roleFamilyName'] ?? ($emp['area'] ?? null);
+            if (isset($f['quantity_of_roles'])) {
+                $emp['roleFamilyQuantity'] = (int) $f['quantity_of_roles'];
+            }
+        }
+
+        $out[] = $emp;
+    }
+
+    return [
+        'employees' => $out,
+        'areas' => count($areasById),
+        'roles' => count($rolesById),
+        'families' => count($familiesById),
+    ];
+}
+
 /** @return array<string, mixed> */
 function grooflow_rrhh_sync_from_apis(PDO $pdo, array $options = []): array
 {
@@ -790,6 +1083,17 @@ function grooflow_rrhh_sync_from_apis(PDO $pdo, array $options = []): array
         $emp = grooflow_rrhh_normalize_buk_pe_employee($raw);
         if ((int) $emp['bukId'] > 0) {
             $employees[] = $emp;
+        }
+    }
+
+    $orgCatalog = ['areas' => 0, 'roles' => 0, 'families' => 0];
+    if (($options['includeOrgCatalogs'] ?? true) !== false && $employees !== []) {
+        try {
+            $orgCatalog = grooflow_rrhh_enrich_with_org_catalogs($employees, $baseUrl, $apiToken);
+            $employees = $orgCatalog['employees'];
+        } catch (Throwable $e) {
+            // Sync no falla por catálogos.
+            $orgCatalog = ['areas' => 0, 'roles' => 0, 'families' => 0];
         }
     }
 
@@ -850,7 +1154,7 @@ function grooflow_rrhh_sync_from_apis(PDO $pdo, array $options = []): array
         }
     }
     $message = sprintf(
-        'RRHH sync: +%d · ~%d · =%d · ausentes %d · total %d · pendientes %d%s%s%s',
+        'RRHH sync: +%d · ~%d · =%d · ausentes %d · total %d · pendientes %d%s%s%s%s',
         $stats['added'],
         $stats['updated'],
         $stats['unchanged'],
@@ -858,6 +1162,14 @@ function grooflow_rrhh_sync_from_apis(PDO $pdo, array $options = []): array
         $stats['total'],
         $pendingSnap['count'],
         $asistenciaMatched > 0 ? (" · asistencia {$asistenciaMatched}") : '',
+        (! empty($orgCatalog['areas']) || ! empty($orgCatalog['roles']))
+            ? sprintf(
+                ' · catálogos áreas %d / roles %d / familias %d',
+                (int) ($orgCatalog['areas'] ?? 0),
+                (int) ($orgCatalog['roles'] ?? 0),
+                (int) ($orgCatalog['families'] ?? 0)
+            )
+            : '',
         $termMsg,
         $truncated ? ' · INCOMPLETO (no se marcaron ausentes)' : ''
     );
@@ -891,6 +1203,11 @@ function grooflow_rrhh_sync_from_apis(PDO $pdo, array $options = []): array
     return [
         'stats' => $stats,
         'asistenciaMatched' => $asistenciaMatched,
+        'orgCatalogs' => [
+            'areas' => (int) ($orgCatalog['areas'] ?? 0),
+            'roles' => (int) ($orgCatalog['roles'] ?? 0),
+            'families' => (int) ($orgCatalog['families'] ?? 0),
+        ],
         'pendingAccess' => $pendingSnap['count'],
         'terminations' => $terminations,
         'message' => $message,
