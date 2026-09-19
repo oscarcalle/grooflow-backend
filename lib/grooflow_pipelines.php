@@ -183,7 +183,7 @@ function grooflow_asistencia_marcaciones_pipeline_if_due(PDO $pdo, array $option
         }
     }
 
-    $maxPages = max(1, min(40, (int) ($options['maxPages'] ?? 20)));
+    $maxPages = max(1, min(50, (int) ($options['maxPages'] ?? 40)));
     $started = (int) round(microtime(true) * 1000);
 
     try {

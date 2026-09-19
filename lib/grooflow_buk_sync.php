@@ -338,7 +338,7 @@ function grooflow_buk_fetch_turnos_all(string $apiRoot, string $apiToken): array
 /**
  * @return list<array<string, mixed>>
  */
-function grooflow_buk_fetch_asistencia_today(string $v2Base, string $apiToken, int $maxPages = 20): array
+function grooflow_buk_fetch_asistencia_today(string $v2Base, string $apiToken, int $maxPages = 40): array
 {
     $pageRes = grooflow_buk_fetch_page($v2Base, $apiToken, 1, 100, 90);
     if ($pageRes['status'] < 200 || $pageRes['status'] >= 300) {

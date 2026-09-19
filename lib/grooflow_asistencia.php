@@ -5,6 +5,7 @@ declare(strict_types=1);
 /**
  * Asistencia normalizada (MySQL):
  * - settings:asistencia → meta + staff + requirements + sede_profiles + sede_mappings
+ *   (+ cost_center_sede_mappings_json en meta)
  * - data:asistencia-snapshots → snapshots diarios
  * - data:asistencia-operational → contexto de alertas
  *
@@ -20,10 +21,27 @@ function grooflow_asistencia_ensure_schema(PDO $pdo): void
             id VARCHAR(40) NOT NULL,
             buk_json JSON NULL,
             area_keywords_json JSON NULL,
+            cost_center_sede_mappings_json JSON NULL,
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY (id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ");
+
+    // Instalaciones previas: columna de overrides CC → sede.
+    try {
+        $cols = $pdo->query('SHOW COLUMNS FROM grooflow_asistencia_meta')->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        $have = [];
+        foreach ($cols as $r) {
+            $have[strtolower((string) ($r['Field'] ?? ''))] = true;
+        }
+        if (! isset($have['cost_center_sede_mappings_json'])) {
+            $pdo->exec(
+                'ALTER TABLE grooflow_asistencia_meta ADD COLUMN cost_center_sede_mappings_json JSON NULL AFTER area_keywords_json'
+            );
+        }
+    } catch (Throwable $e) {
+        // ignore race / already exists
+    }
 
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS grooflow_asistencia_staff (
@@ -182,8 +200,6 @@ function grooflow_asistencia_compose_settings(PDO $pdo): array
             'autoRefreshIntervalMinutes' => 30,
             'autoRefreshWindowStart' => '06:00',
             'autoRefreshWindowEnd' => '22:00',
-            'staffSyncEnabled' => true,
-            'staffSyncIntervalMinutes' => 60,
             'marcacionesPipelineEnabled' => true,
             'marcacionesPipelineIntervalMinutes' => 30,
         ],
@@ -195,9 +211,13 @@ function grooflow_asistencia_compose_settings(PDO $pdo): array
             'peluqueria' => [],
         ],
         'sedeMappings' => [],
+        'costCenterSedeMappings' => [],
     ];
 
-    $meta = $pdo->query("SELECT buk_json, area_keywords_json FROM grooflow_asistencia_meta WHERE id = 'default' LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+    $meta = $pdo->query(
+        "SELECT buk_json, area_keywords_json, cost_center_sede_mappings_json
+         FROM grooflow_asistencia_meta WHERE id = 'default' LIMIT 1"
+    )->fetch(PDO::FETCH_ASSOC);
     if (is_array($meta)) {
         $buk = grooflow_json_decode(isset($meta['buk_json']) ? (string) $meta['buk_json'] : null);
         if (is_array($buk)) {
@@ -206,6 +226,12 @@ function grooflow_asistencia_compose_settings(PDO $pdo): array
         $kw = grooflow_json_decode(isset($meta['area_keywords_json']) ? (string) $meta['area_keywords_json'] : null);
         if (is_array($kw)) {
             $settings['areaKeywords'] = $kw;
+        }
+        $ccMaps = grooflow_json_decode(
+            isset($meta['cost_center_sede_mappings_json']) ? (string) $meta['cost_center_sede_mappings_json'] : null
+        );
+        if (is_array($ccMaps)) {
+            $settings['costCenterSedeMappings'] = $ccMaps;
         }
     }
 
@@ -249,15 +275,22 @@ function grooflow_asistencia_sync_settings_tables(PDO $pdo, array $settings): vo
 {
     $buk = isset($settings['buk']) && is_array($settings['buk']) ? $settings['buk'] : [];
     $keywords = isset($settings['areaKeywords']) && is_array($settings['areaKeywords']) ? $settings['areaKeywords'] : [];
+    $ccMaps = isset($settings['costCenterSedeMappings']) && is_array($settings['costCenterSedeMappings'])
+        ? $settings['costCenterSedeMappings']
+        : [];
 
     $metaStmt = $pdo->prepare('
-        INSERT INTO grooflow_asistencia_meta (id, buk_json, area_keywords_json)
-        VALUES (\'default\', ?, ?)
-        ON DUPLICATE KEY UPDATE buk_json = VALUES(buk_json), area_keywords_json = VALUES(area_keywords_json)
+        INSERT INTO grooflow_asistencia_meta (id, buk_json, area_keywords_json, cost_center_sede_mappings_json)
+        VALUES (\'default\', ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+            buk_json = VALUES(buk_json),
+            area_keywords_json = VALUES(area_keywords_json),
+            cost_center_sede_mappings_json = VALUES(cost_center_sede_mappings_json)
     ');
     $metaStmt->execute([
         grooflow_json_encode($buk),
         grooflow_json_encode($keywords),
+        grooflow_json_encode($ccMaps),
     ]);
 
     // Staff
@@ -455,6 +488,15 @@ function grooflow_asistencia_get_settings(PDO $pdo): ?array
             if ($compToken === '' && $blobToken !== '') {
                 $composed['buk'] = array_merge($composed['buk'], $blob['buk']);
             }
+        }
+        // Legacy: overrides CC en blob KV si meta aún no los tiene.
+        if (
+            is_array($blob)
+            && is_array($blob['costCenterSedeMappings'] ?? null)
+            && ($composed['costCenterSedeMappings'] ?? []) === []
+            && $blob['costCenterSedeMappings'] !== []
+        ) {
+            $composed['costCenterSedeMappings'] = $blob['costCenterSedeMappings'];
         }
 
         return $composed;

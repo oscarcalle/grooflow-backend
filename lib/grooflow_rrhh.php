@@ -1105,7 +1105,7 @@ function grooflow_rrhh_sync_from_apis(PDO $pdo, array $options = []): array
         if ($asistToken !== '' && ! grooflow_buk_token_is_redacted($asistToken) && ! empty($buk['enabled'])) {
             try {
                 $asistBase = grooflow_sanitize_buk_base_url((string) ($buk['apiBaseUrl'] ?? ''));
-                $records = grooflow_buk_fetch_asistencia_today($asistBase, $asistToken, 20);
+                $records = grooflow_buk_fetch_asistencia_today($asistBase, $asistToken, 40);
                 $enriched = grooflow_rrhh_enrich_with_asistencia($employees, $records);
                 $employees = $enriched['employees'];
                 $asistenciaMatched = $enriched['matched'];
@@ -2015,6 +2015,109 @@ function grooflow_rrhh_guess_asistencia_area(?string $area, ?string $cargo): str
 }
 
 /**
+ * Mapa por defecto centro de costo Buk.pe → sede GrooFlow (pertenencia / sede base).
+ *
+ * @return array<string, string>
+ */
+function grooflow_rrhh_default_cost_center_sedes(): array
+{
+    return [
+        '101010' => 'Benavides',
+        '202020' => 'Jorge Chavez',
+        '303030' => 'Petmovil',
+        '404040' => 'San Borja',
+        '505050' => 'La Molina',
+        '606060' => 'Magdalena',
+        '707070' => 'Memorial',
+        '999999' => 'Central',
+    ];
+}
+
+/** Normaliza código de centro de costo a 6 dígitos cuando aplica. */
+function grooflow_rrhh_normalize_cost_center_code(?string $raw): string
+{
+    if ($raw === null || $raw === '') {
+        return '';
+    }
+    $digits = preg_replace('/\D+/', '', (string) $raw) ?? '';
+    if (strlen($digits) >= 6) {
+        return substr($digits, 0, 6);
+    }
+
+    return $digits;
+}
+
+/**
+ * Extrae código de centro de costo desde fila Buk (columna o payload JSON).
+ *
+ * @param array<string, mixed> $emp
+ */
+function grooflow_rrhh_extract_cost_center_code(array $emp): string
+{
+    $direct = grooflow_rrhh_normalize_cost_center_code(
+        isset($emp['cost_center']) ? (string) $emp['cost_center'] : null
+    );
+    if ($direct !== '') {
+        return $direct;
+    }
+
+    $payload = [];
+    if (! empty($emp['payload'])) {
+        if (is_array($emp['payload'])) {
+            $payload = $emp['payload'];
+        } elseif (is_string($emp['payload'])) {
+            $decoded = grooflow_json_decode($emp['payload']);
+            $payload = is_array($decoded) ? $decoded : [];
+        }
+    }
+    $normalized = is_array($payload['normalized'] ?? null) ? $payload['normalized'] : [];
+    if (isset($normalized['costCenter'])) {
+        $code = grooflow_rrhh_normalize_cost_center_code((string) $normalized['costCenter']);
+        if ($code !== '') {
+            return $code;
+        }
+    }
+    $raw = is_array($payload['raw'] ?? null) ? $payload['raw'] : [];
+    $jobs = is_array($raw['current_job'] ?? null) ? $raw['current_job'] : (is_array($raw['jobs'] ?? null) ? ($raw['jobs'][0] ?? []) : []);
+    if (is_array($jobs) && isset($jobs['cost_center'])) {
+        return grooflow_rrhh_normalize_cost_center_code((string) $jobs['cost_center']);
+    }
+
+    return '';
+}
+
+/**
+ * Resuelve sede base desde centro de costo (overrides en settings + mapa default).
+ *
+ * @param array<string, mixed> $settings
+ */
+function grooflow_rrhh_resolve_sede_from_cost_center(string $codeRaw, array $settings): string
+{
+    $code = grooflow_rrhh_normalize_cost_center_code($codeRaw);
+    if ($code === '') {
+        return '';
+    }
+    $overrides = is_array($settings['costCenterSedeMappings'] ?? null)
+        ? $settings['costCenterSedeMappings']
+        : [];
+    foreach ($overrides as $row) {
+        if (! is_array($row)) {
+            continue;
+        }
+        $rowCode = grooflow_rrhh_normalize_cost_center_code(
+            isset($row['costCenterCode']) ? (string) $row['costCenterCode'] : null
+        );
+        $name = trim((string) ($row['sedeName'] ?? ''));
+        if ($rowCode === $code && $name !== '' && ! preg_match('/^\d{1,6}$/', $name)) {
+            return $name;
+        }
+    }
+    $defaults = grooflow_rrhh_default_cost_center_sedes();
+
+    return isset($defaults[$code]) ? (string) $defaults[$code] : '';
+}
+
+/**
  * Resuelve sede GrooFlow desde sede/recinto Buk usando mappings/perfiles.
  * Si el valor Buk es solo un código numérico (01, 03…), no lo usa como etiqueta.
  *
@@ -2170,7 +2273,7 @@ function grooflow_rrhh_project_asistencia_staff(PDO $pdo, array $options = []): 
     $rows = $pdo->query('
         SELECT buk_id, full_name, document_number, email, personal_email, phone,
                cargo, area, sede, recinto_codigo, recinto_nombre, linked_usuario_id,
-               is_active, is_terminated
+               is_active, is_terminated, payload
         FROM grooflow_buk_empleados
         WHERE is_active = 1 AND is_terminated = 0
         ORDER BY full_name
@@ -2200,10 +2303,15 @@ function grooflow_rrhh_project_asistencia_staff(PDO $pdo, array $options = []): 
         }
         $activeBukIds[$bukId] = true;
         $doc = grooflow_rrhh_doc_key(isset($emp['document_number']) ? (string) $emp['document_number'] : null);
-        $sedeName = grooflow_rrhh_resolve_asistencia_sede($emp, $settings);
         $linkedId = trim((string) ($emp['linked_usuario_id'] ?? ''));
-        // Preferir sedes de Gestión cuando hay vínculo (evita códigos Buk 01/03/04).
-        if ($linkedId !== '' && function_exists('auth_user_sedes_assigned')) {
+        // Sede base = centro de costo Buk.pe (no huellero/recinto del día).
+        $homeCc = grooflow_rrhh_extract_cost_center_code($emp);
+        $sedeBase = $homeCc !== ''
+            ? grooflow_rrhh_resolve_sede_from_cost_center($homeCc, $settings)
+            : '';
+        $sedeName = $sedeBase;
+        // Fallback: sede de Gestión vinculada (evita códigos Buk 01/03/04).
+        if ($sedeName === '' && $linkedId !== '' && function_exists('auth_user_sedes_assigned')) {
             $assigned = auth_user_sedes_assigned($pdo, (int) $linkedId);
             if ($assigned !== []) {
                 $fromGestion = trim((string) ($assigned[0]['nombre'] ?? ''));
@@ -2212,8 +2320,25 @@ function grooflow_rrhh_project_asistencia_staff(PDO $pdo, array $options = []): 
                 }
             }
         }
+        // Último recurso: mappings por recinto histórico (no operativa del día).
+        if ($sedeName === '') {
+            $sedeName = grooflow_rrhh_resolve_asistencia_sede($emp, $settings);
+        }
         if ($sedeName === '') {
             $sedeName = 'Sin sede';
+        }
+        if ($sedeBase === '') {
+            $sedeBase = $sedeName;
+        }
+        // Alinear con catálogo Gestión (p. ej. "50. La Molina" → "La Molina").
+        if (! function_exists('grooflow_resolve_sede_canonical')) {
+            require_once __DIR__ . '/grooflow_sedes.php';
+        }
+        if ($sedeName !== 'Sin sede') {
+            $sedeName = grooflow_resolve_sede_canonical($pdo, $sedeName);
+        }
+        if ($sedeBase !== '' && $sedeBase !== 'Sin sede') {
+            $sedeBase = grooflow_resolve_sede_canonical($pdo, $sedeBase);
         }
         if ($onlySedes !== [] && ! isset($onlySedes[mb_strtolower($sedeName)])) {
             $skipped++;
@@ -2235,12 +2360,16 @@ function grooflow_rrhh_project_asistencia_staff(PDO $pdo, array $options = []): 
             'fullName' => (string) ($emp['full_name'] ?? ''),
             'cargoLabel' => trim((string) ($emp['cargo'] ?? '')) !== '' ? (string) $emp['cargo'] : 'Colaborador',
             'sedeName' => $sedeName,
+            'sedeBase' => $sedeBase,
             'rut' => $doc !== '' ? $doc : null,
             'email' => trim((string) ($emp['email'] ?? $emp['personal_email'] ?? '')) ?: null,
             'phone' => trim((string) ($emp['phone'] ?? '')) ?: null,
             'bukEmployeeId' => $bukId,
             'source' => 'buk_pe',
         ];
+        if ($homeCc !== '') {
+            $official['homeCostCenterCode'] = $homeCc;
+        }
         if ($linkedId !== '') {
             $official['usuarioId'] = $linkedId;
         }
@@ -2248,7 +2377,7 @@ function grooflow_rrhh_project_asistencia_staff(PDO $pdo, array $options = []): 
         if ($idx !== null && isset($staff[$idx]) && is_array($staff[$idx])) {
             $existing = $staff[$idx];
             $next = $existing;
-            foreach (['fullName', 'sedeName', 'rut', 'email', 'phone', 'bukEmployeeId', 'source', 'usuarioId'] as $k) {
+            foreach (['fullName', 'sedeName', 'sedeBase', 'homeCostCenterCode', 'rut', 'email', 'phone', 'bukEmployeeId', 'source', 'usuarioId'] as $k) {
                 if (array_key_exists($k, $official) && $official[$k] !== null) {
                     $next[$k] = $official[$k];
                 }
@@ -2291,6 +2420,7 @@ function grooflow_rrhh_project_asistencia_staff(PDO $pdo, array $options = []): 
         $member = [
             'id' => 'buk_' . $bukId,
             'sedeName' => $sedeName,
+            'sedeBase' => $sedeBase,
             'fullName' => $official['fullName'],
             'cargoLabel' => $official['cargoLabel'],
             'area' => grooflow_rrhh_guess_asistencia_area(
@@ -2308,6 +2438,9 @@ function grooflow_rrhh_project_asistencia_staff(PDO $pdo, array $options = []): 
             'source' => 'buk_pe',
             'sortOrder' => 0,
         ];
+        if ($homeCc !== '') {
+            $member['homeCostCenterCode'] = $homeCc;
+        }
         if ($linkedId !== '') {
             $member['usuarioId'] = $linkedId;
         }
