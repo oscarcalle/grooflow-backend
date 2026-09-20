@@ -735,16 +735,15 @@ function grooflow_nivel_menu_sync(PDO $pdo, int $nivelId, array $menuIds, array 
                 $perm = is_array($permissionsByMenu[$menuId] ?? null)
                     ? $permissionsByMenu[$menuId]
                     : (is_array($permissionsByMenu[(string) $menuId] ?? null) ? $permissionsByMenu[(string) $menuId] : []);
-                // Si no vienen acciones, al asignar el módulo se concede operar completo.
-                $grantAll = $perm === [];
+                // Acciones explícitas: desmarcar agregar/editar/eliminar debe persistir en 0 (solo ver).
                 $stmt->execute([
                     $nivelId,
                     $menuId,
-                    ($grantAll || ! empty($perm['agregar'])) ? 1 : 0,
-                    ($grantAll || ! empty($perm['editar'])) ? 1 : 0,
-                    ($grantAll || ! empty($perm['eliminar'])) ? 1 : 0,
-                    ($grantAll || ! empty($perm['exportar'])) ? 1 : 0,
-                    ($grantAll || ! empty($perm['configurar'])) ? 1 : 0,
+                    ! empty($perm['agregar']) ? 1 : 0,
+                    ! empty($perm['editar']) ? 1 : 0,
+                    ! empty($perm['eliminar']) ? 1 : 0,
+                    ! empty($perm['exportar']) ? 1 : 0,
+                    ! empty($perm['configurar']) ? 1 : 0,
                 ]);
             }
         }
@@ -805,6 +804,79 @@ function grooflow_menu_permissions_for_nivel(PDO $pdo, int $nivelId): array
     }
 
     return $permissions;
+}
+
+/**
+ * Acciones CRUD por módulo (agregar/editar/eliminar/…) para el cliente y gates de API.
+ *
+ * @return array<string, array{ver:bool,agregar:bool,editar:bool,eliminar:bool,exportar:bool,configurar:bool}>
+ */
+function grooflow_menu_actions_for_nivel(PDO $pdo, int $nivelId): array
+{
+    grooflow_menu_ensure_seed($pdo);
+    $empty = [
+        'ver' => false,
+        'agregar' => false,
+        'editar' => false,
+        'eliminar' => false,
+        'exportar' => false,
+        'configurar' => false,
+    ];
+    $actions = [];
+    foreach (grooflow_menu_default_leaves() as $leaf) {
+        $key = trim((string) ($leaf['modulo_key'] ?? ''));
+        if ($key !== '') {
+            $actions[$key] = $empty;
+        }
+    }
+
+    if ($nivelId <= 0) {
+        return $actions;
+    }
+
+    $full = [
+        'ver' => true,
+        'agregar' => true,
+        'editar' => true,
+        'eliminar' => true,
+        'exportar' => true,
+        'configurar' => true,
+    ];
+
+    if (in_array($nivelId, [1, 2], true)) {
+        foreach (array_keys($actions) as $key) {
+            $actions[$key] = $full;
+        }
+
+        return $actions;
+    }
+
+    $assignment = grooflow_nivel_menu_for_nivel($pdo, $nivelId);
+    foreach ($assignment['items'] as $item) {
+        if (empty($item['asignado']) || empty($item['permisos']['ver'])) {
+            continue;
+        }
+        $mod = trim((string) ($item['modulo_key'] ?? ''));
+        if ($mod === '') {
+            continue;
+        }
+        $p = is_array($item['permisos'] ?? null) ? $item['permisos'] : [];
+        $prev = $actions[$mod] ?? $empty;
+        $actions[$mod] = [
+            'ver' => true,
+            'agregar' => ! empty($prev['agregar']) || ! empty($p['agregar']),
+            'editar' => ! empty($prev['editar']) || ! empty($p['editar']),
+            'eliminar' => ! empty($prev['eliminar']) || ! empty($p['eliminar']),
+            'exportar' => ! empty($prev['exportar']) || ! empty($p['exportar']),
+            'configurar' => ! empty($prev['configurar']) || ! empty($p['configurar']),
+        ];
+    }
+
+    if (! empty($actions['Dashboard']['ver'])) {
+        $actions['Alertas'] = array_merge($empty, ['ver' => true]);
+    }
+
+    return $actions;
 }
 
 /** @return list<array<string, mixed>> */

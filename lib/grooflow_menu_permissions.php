@@ -37,6 +37,10 @@ function grooflow_menu_actions_for_route(?string $route, ?string $moduloKey = nu
         $actions = array_merge($actions, ['agregar', 'editar', 'eliminar']);
     }
 
+    if (in_array($mod, ['Accidentes de Trabajo', 'Entrega de Uniformes'], true)) {
+        $actions = array_merge($actions, ['exportar', 'configurar']);
+    }
+
     if (in_array('exportar', $actions, true) === false && in_array($mod, ['Reportes', 'Auditoría', 'Conciliación'], true)) {
         $actions[] = 'exportar';
     }

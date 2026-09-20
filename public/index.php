@@ -135,6 +135,7 @@ function grooflow_dispatch(PDO $pdo): void
             ],
             'profile' => $appUser,
             'menu_permissions' => $row ? grooflow_menu_permissions_for_nivel($pdo, $nivelId) : [],
+            'menu_actions' => $row ? grooflow_menu_actions_for_nivel($pdo, $nivelId) : [],
             'menu' => $row ? grooflow_menu_nav_for_user($pdo, $nivelId) : [],
             'menu_sections' => $row ? grooflow_menu_nav_sections_for_user($pdo, $nivelId) : [],
             'nivel_id' => $nivelId,
@@ -203,6 +204,12 @@ function grooflow_dispatch(PDO $pdo): void
         grooflow_assert_module($pdo, ['Recursos Humanos']);
         if (!grooflow_access_context($pdo)['admin'] && !grooflow_access_context($pdo)['allSedes']) throw new RuntimeException('Sin permiso para consultar datos globales de RRHH');
     }
+    if (str_starts_with($path, '/fleet/')) {
+        grooflow_assert_module($pdo, ['Gestión Vehicular', 'Recursos Humanos']);
+    }
+    if (str_starts_with($path, '/hr/')) {
+        grooflow_assert_module($pdo, ['Accidentes de Trabajo', 'Entrega de Uniformes', 'Recursos Humanos']);
+    }
     if (str_starts_with($path, '/asistencia/buk-records')) {
         grooflow_assert_module($pdo, ['Asistencia', 'Recursos Humanos']);
         if (!grooflow_access_context($pdo)['admin'] && !grooflow_access_context($pdo)['allSedes']) throw new RuntimeException('Sin permiso para registros globales Buk');
@@ -246,6 +253,7 @@ function grooflow_dispatch(PDO $pdo): void
             ],
             'profile' => $appUser,
             'menu_permissions' => $menuPermissions,
+            'menu_actions' => grooflow_menu_actions_for_nivel($pdo, $nivelId),
             'menu' => grooflow_menu_nav_for_user($pdo, $nivelId),
             'menu_sections' => grooflow_menu_nav_sections_for_user($pdo, $nivelId),
             'nivel_id' => $nivelId,
@@ -722,6 +730,20 @@ function grooflow_dispatch(PDO $pdo): void
 
     if ($path === '/rrhh/empleados' && $method === 'GET') {
         api_json_response(['ok' => true, ...grooflow_rrhh_list_employees($pdo, $_GET)]);
+
+        return;
+    }
+
+    if ($path === '/fleet/choferes' && $method === 'GET') {
+        require_once dirname(__DIR__) . '/lib/grooflow_fleet.php';
+        api_json_response(['ok' => true, 'items' => grooflow_fleet_list_choferes($pdo)]);
+
+        return;
+    }
+
+    if ($path === '/hr/colaboradores' && $method === 'GET') {
+        require_once dirname(__DIR__) . '/lib/grooflow_hr.php';
+        api_json_response(['ok' => true, 'items' => grooflow_hr_list_colaboradores($pdo)]);
 
         return;
     }

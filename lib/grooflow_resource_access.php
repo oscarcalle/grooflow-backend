@@ -297,14 +297,49 @@ function grooflow_assert_resource_action(PDO $pdo, string $key, string $action):
 
 function grooflow_required_actions(mixed $before, mixed $after): array
 {
-    if (!is_array($before) || !is_array($after) || !array_is_list($before) || !array_is_list($after)) return ['editar'];
-    $old = []; $new = []; $actions = [];
-    foreach ($before as $r) $old[(string) ($r['id'] ?? '')] = $r;
-    foreach ($after as $r) $new[(string) ($r['id'] ?? '')] = $r;
-    foreach ($new as $id => $r) {
-        if (!isset($old[$id])) $actions[] = 'agregar';
-        elseif ($old[$id] != $r) $actions[] = 'editar';
+    if (! is_array($before) || ! is_array($after)) {
+        return ['editar'];
     }
-    foreach ($old as $id => $_) if (!isset($new[$id])) $actions[] = 'eliminar';
+
+    // Listas de registros (transacciones, ítems, vehículos, …).
+    if (array_is_list($before) && array_is_list($after)) {
+        $old = [];
+        $new = [];
+        $actions = [];
+        foreach ($before as $r) {
+            $old[(string) ($r['id'] ?? '')] = $r;
+        }
+        foreach ($after as $r) {
+            $new[(string) ($r['id'] ?? '')] = $r;
+        }
+        foreach ($new as $id => $r) {
+            if (! isset($old[$id])) {
+                $actions[] = 'agregar';
+            } elseif ($old[$id] != $r) {
+                $actions[] = 'editar';
+            }
+        }
+        foreach ($old as $id => $_) {
+            if (! isset($new[$id])) {
+                $actions[] = 'eliminar';
+            }
+        }
+
+        return array_values(array_unique($actions));
+    }
+
+    // Objetos anidados (data:fleet, data:inventory, …): derivar CRUD de listas hijas.
+    $actions = [];
+    $keys = array_unique([...array_keys($before), ...array_keys($after)]);
+    foreach ($keys as $key) {
+        $b = $before[$key] ?? null;
+        $a = $after[$key] ?? null;
+        if (is_array($b) && is_array($a) && array_is_list($b) && array_is_list($a)) {
+            $actions = array_merge($actions, grooflow_required_actions($b, $a));
+        } elseif ($b != $a) {
+            $actions[] = 'editar';
+        }
+    }
+
     return array_values(array_unique($actions));
 }
