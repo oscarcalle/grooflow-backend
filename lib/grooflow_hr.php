@@ -37,9 +37,9 @@ function grooflow_hr_list_colaboradores(PDO $pdo): array
             payload
         FROM grooflow_buk_empleados
         WHERE is_active = 1
-          AND missing_from_source = 0
+          AND COALESCE(is_terminated, 0) = 0
         ORDER BY full_name ASC, buk_id ASC
-        LIMIT 2000
+        LIMIT 5000
     ";
     $rows = $pdo->query($sql)->fetchAll(PDO::FETCH_ASSOC) ?: [];
     $out = [];
