@@ -167,10 +167,36 @@ function grooflow_resource_allowed(array $ctx, string $key, bool $write = false)
     if (!empty($ctx['admin'])) return true;
     // User/role administration must never be inferred from a menu assignment.
     if (in_array($key, ['data:users', 'data:roles'], true)) return !$write;
-    if ($write && in_array($key, ['settings:system', 'settings:asistencia', 'settings:rrhh', 'data:sedes'], true)) return false;
+    // Catálogos globales solo admin (salvo Asistencia: gerencia/RRHH configuran sede/staff).
+    if ($write && in_array($key, ['settings:system', 'settings:rrhh', 'data:sedes'], true)) return false;
+    if ($write && $key === 'settings:asistencia') {
+        return grooflow_caller_can_write_asistencia_settings($ctx);
+    }
     foreach (grooflow_resource_modules($key, $write) as $module) {
         if ($module === '*' || ($ctx['permissions'][$module] ?? false) === true) return true;
     }
+    return false;
+}
+
+/** Gerencia / RRHH con Asistencia pueden persistir organigrama, sede y staff. */
+function grooflow_caller_can_write_asistencia_settings(array $ctx): bool
+{
+    foreach (['Asistencia', 'Recursos Humanos'] as $module) {
+        if (($ctx['permissions'][$module] ?? false) !== true) {
+            continue;
+        }
+        $actions = $ctx['actions'][$module] ?? null;
+        if (! is_array($actions)) {
+            // Módulo asignado sin mapa de acciones → permitir (compat perfiles legacy).
+            return true;
+        }
+        foreach (['editar', 'agregar', 'configurar', 'eliminar'] as $action) {
+            if (! empty($actions[$action])) {
+                return true;
+            }
+        }
+    }
+
     return false;
 }
 
@@ -225,6 +251,7 @@ function grooflow_project_resource(array $ctx, string $key, mixed $value): mixed
         'data:chartOfAccounts',
         'settings:config',
         'settings:system',
+        'settings:asistencia',
         'settings:theme',
         'settings:alertThresholds',
         'settings:alertReadState',
@@ -291,6 +318,14 @@ function grooflow_assert_resource_action(PDO $pdo, string $key, string $action):
     if ($ctx['admin']) return;
     foreach (grooflow_resource_modules($key, $action !== 'ver') as $module) {
         if (($ctx['actions'][$module][$action] ?? false) === true) return;
+        // Configurar sede/organigrama implica poder editar el blob de Asistencia.
+        if (
+            $action === 'editar'
+            && $key === 'settings:asistencia'
+            && (($ctx['actions'][$module]['configurar'] ?? false) === true)
+        ) {
+            return;
+        }
     }
     throw new RuntimeException('Sin permiso para la acción ' . $action);
 }
