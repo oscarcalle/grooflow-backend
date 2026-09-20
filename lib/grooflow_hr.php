@@ -31,6 +31,7 @@ function grooflow_hr_list_colaboradores(PDO $pdo): array
             area_asistencia,
             contract_type,
             start_date,
+            active_since,
             sede,
             linked_usuario_id,
             payload
@@ -94,6 +95,14 @@ function grooflow_hr_list_colaboradores(PDO $pdo): array
             $contract = trim((string) $normalized['contractType']);
         }
 
+        $activeSince = trim((string) ($r['active_since'] ?? ''));
+        if ($activeSince === '' && ! empty($normalized['activeSince'])) {
+            $activeSince = trim((string) $normalized['activeSince']);
+        }
+        if ($activeSince !== '' && strlen($activeSince) > 10) {
+            $activeSince = substr($activeSince, 0, 10);
+        }
+
         $start = trim((string) ($r['start_date'] ?? ''));
         if ($start === '' && ! empty($normalized['startDate'])) {
             $start = trim((string) $normalized['startDate']);
@@ -110,6 +119,7 @@ function grooflow_hr_list_colaboradores(PDO $pdo): array
             'cargo' => $cargo !== '' ? $cargo : null,
             'orgAreaParentName' => $areaPadre !== '' ? $areaPadre : null,
             'contractType' => $contract !== '' ? $contract : null,
+            'activeSince' => $activeSince !== '' ? $activeSince : null,
             'startDate' => $start !== '' ? $start : null,
             'sede' => trim((string) ($r['sede'] ?? '')) ?: null,
             'linkedUsuarioId' => isset($r['linked_usuario_id']) && $r['linked_usuario_id'] !== null && $r['linked_usuario_id'] !== ''
