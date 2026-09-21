@@ -80,14 +80,24 @@ function grooflow_hr_list_colaboradores(PDO $pdo): array
                 break;
             }
         }
-        if ($areaPadre === '' && ! empty($normalized['orgAreaName'])) {
-            $areaPadre = trim((string) $normalized['orgAreaName']);
+        $orgAreaName = '';
+        if (! empty($normalized['orgAreaName'])) {
+            $orgAreaName = trim((string) $normalized['orgAreaName']);
         }
-        if ($areaPadre === '') {
-            $areaPadre = trim((string) ($r['area'] ?? ''));
+        if ($areaPadre === '' && $orgAreaName !== '') {
+            $areaPadre = $orgAreaName;
         }
-        if ($areaPadre === '') {
-            $areaPadre = trim((string) ($r['area_asistencia'] ?? ''));
+        // No usar columna `area` como área padre: en Buk.pe suele ser la familia del cargo.
+
+        $roleFamily = '';
+        foreach (['roleFamilyName', 'role_family_name'] as $k) {
+            if (! empty($normalized[$k])) {
+                $roleFamily = trim((string) $normalized[$k]);
+                break;
+            }
+        }
+        if ($roleFamily === '') {
+            $roleFamily = trim((string) ($r['area'] ?? ''));
         }
 
         $contract = trim((string) ($r['contract_type'] ?? ''));
@@ -125,7 +135,9 @@ function grooflow_hr_list_colaboradores(PDO $pdo): array
             'documentNumber' => trim((string) ($r['document_number'] ?? '')) ?: null,
             'email' => trim((string) ($r['email'] ?? '')) ?: null,
             'cargo' => $cargo !== '' ? $cargo : null,
+            'roleFamilyName' => $roleFamily !== '' ? $roleFamily : null,
             'orgAreaParentName' => $areaPadre !== '' ? $areaPadre : null,
+            'orgAreaName' => $orgAreaName !== '' ? $orgAreaName : null,
             'contractType' => $contract !== '' ? $contract : null,
             'activeSince' => $activeSince !== '' ? $activeSince : null,
             'startDate' => $start !== '' ? $start : null,
