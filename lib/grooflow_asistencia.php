@@ -16,6 +16,17 @@ require_once __DIR__ . '/grooflow_schema.php';
 
 function grooflow_asistencia_ensure_schema(PDO $pdo): void
 {
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    // Evitar DDL dentro de una TX abierta (commit implícito de MySQL).
+    if ($pdo->inTransaction()) {
+        $done = true;
+
+        return;
+    }
+
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS grooflow_asistencia_meta (
             id VARCHAR(40) NOT NULL,
@@ -167,6 +178,8 @@ function grooflow_asistencia_ensure_schema(PDO $pdo): void
             KEY idx_asist_buk_id (buk_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ");
+
+    $done = true;
 }
 
 function grooflow_asistencia_table_count(PDO $pdo, string $table): int

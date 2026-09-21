@@ -15,16 +15,24 @@ function grooflow_revision(mixed $value): string
 
 function grooflow_atomic(PDO $pdo, callable $work): mixed
 {
-    if ($pdo->inTransaction()) return $work();
+    if ($pdo->inTransaction()) {
+        return $work();
+    }
     // One lock serializes multi-resource operations with ordinary edits too.
     $pdo->beginTransaction();
     try {
-        $pdo->query("SELECT id FROM grooflow_write_lock WHERE id = 1 FOR UPDATE")->fetchColumn();
+        $pdo->query('SELECT id FROM grooflow_write_lock WHERE id = 1 FOR UPDATE')->fetchColumn();
         $result = $work();
-        $pdo->commit();
+        // MySQL hace commit implícito con DDL (CREATE/ALTER). No llamar commit() si ya no hay TX.
+        if ($pdo->inTransaction()) {
+            $pdo->commit();
+        }
+
         return $result;
     } catch (Throwable $e) {
-        if ($pdo->inTransaction()) $pdo->rollBack();
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
         throw $e;
     }
 }
@@ -82,13 +90,31 @@ function grooflow_read_resource(PDO $pdo, string $key): array
 function grooflow_write_resource(PDO $pdo, string $key, mixed $incoming, ?string $revision): array
 {
     grooflow_assert_resource($pdo, $key, true);
+    // Precalentar esquemas con DDL fuera de la TX: CREATE TABLE IF NOT EXISTS
+    // hace commit implícito en MySQL y rompía el guardado (400 / "no active transaction").
+    if (
+        $key === 'settings:asistencia'
+        || $key === 'data:asistencia-snapshots'
+        || $key === 'data:asistencia-operational'
+    ) {
+        require_once __DIR__ . '/grooflow_asistencia.php';
+        grooflow_asistencia_ensure_schema($pdo);
+    }
+    grooflow_ensure_schema($pdo);
+
     return grooflow_atomic($pdo, function () use ($pdo, $key, $incoming, $revision) {
         $ctx = grooflow_access_context($pdo);
         $full = grooflow_kv_get($pdo, $key);
         $visible = grooflow_project_resource($ctx, $key, $full);
-        if (grooflow_revision($incoming) === grooflow_revision($visible)) return ['ok' => true, 'revision' => grooflow_revision($visible)];
-        if ($revision === null || !hash_equals(grooflow_revision($visible), $revision)) throw new GrooflowConflict('Los datos cambiaron. Recarga antes de guardar; tu borrador se conserva.');
-        foreach (grooflow_required_actions($visible, $incoming) as $action) grooflow_assert_resource_action($pdo, $key, $action);
+        if (grooflow_revision($incoming) === grooflow_revision($visible)) {
+            return ['ok' => true, 'revision' => grooflow_revision($visible)];
+        }
+        if ($revision === null || ! hash_equals(grooflow_revision($visible), $revision)) {
+            throw new GrooflowConflict('Los datos cambiaron. Recarga antes de guardar; tu borrador se conserva.');
+        }
+        foreach (grooflow_required_actions($visible, $incoming) as $action) {
+            grooflow_assert_resource_action($pdo, $key, $action);
+        }
         grooflow_validate_resource($key, $incoming);
         if ($key === 'data:pettyCash') {
             $beforeList = is_array($visible) && array_is_list($visible) ? $visible : [];
@@ -108,14 +134,19 @@ function grooflow_write_resource(PDO $pdo, string $key, mixed $incoming, ?string
             'settings:alertReadState',
         ], true);
         $value = $incoming;
-        if (!$ctx['admin'] && !$ctx['allSedes'] && !$global) {
+        if (! $ctx['admin'] && ! $ctx['allSedes'] && ! $global) {
             $projected = grooflow_project_resource($ctx, $key, $incoming);
-            if (grooflow_revision($projected) !== grooflow_revision($incoming)) throw new RuntimeException('Sin permiso para escribir datos fuera de tus sedes');
+            if (grooflow_revision($projected) !== grooflow_revision($incoming)) {
+                throw new RuntimeException('Sin permiso para escribir datos fuera de tus sedes');
+            }
             $value = grooflow_merge_scoped(is_array($full) ? $full : [], is_array($visible) ? $visible : [], $incoming);
         }
-        if ($key === 'data:transactions') grooflow_assert_open_months($pdo, is_array($full) ? $full : [], $value);
+        if ($key === 'data:transactions') {
+            grooflow_assert_open_months($pdo, is_array($full) ? $full : [], $value);
+        }
         grooflow_kv_set($pdo, $key, $value);
         $saved = grooflow_project_resource($ctx, $key, grooflow_kv_get($pdo, $key));
+
         return ['ok' => true, 'revision' => grooflow_revision($saved)];
     });
 }

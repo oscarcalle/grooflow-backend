@@ -71,6 +71,10 @@ function grooflow_ensure_schema(PDO $pdo): void
     if ($done) {
         return;
     }
+    // No ejecutar DDL dentro de una TX (MySQL hace commit implícito).
+    if ($pdo->inTransaction()) {
+        return;
+    }
     $done = true;
 
     $pdo->exec("
