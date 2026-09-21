@@ -111,6 +111,14 @@ function grooflow_hr_list_colaboradores(PDO $pdo): array
             $start = substr($start, 0, 10);
         }
 
+        $costCenter = '';
+        if (! function_exists('grooflow_rrhh_extract_cost_center_code')) {
+            require_once __DIR__ . '/grooflow_rrhh.php';
+        }
+        if (function_exists('grooflow_rrhh_extract_cost_center_code')) {
+            $costCenter = grooflow_rrhh_extract_cost_center_code($r);
+        }
+
         $out[] = [
             'bukId' => (int) ($r['buk_id'] ?? 0),
             'fullName' => $full,
@@ -122,6 +130,7 @@ function grooflow_hr_list_colaboradores(PDO $pdo): array
             'activeSince' => $activeSince !== '' ? $activeSince : null,
             'startDate' => $start !== '' ? $start : null,
             'sede' => trim((string) ($r['sede'] ?? '')) ?: null,
+            'costCenter' => $costCenter !== '' ? $costCenter : null,
             'linkedUsuarioId' => isset($r['linked_usuario_id']) && $r['linked_usuario_id'] !== null && $r['linked_usuario_id'] !== ''
                 ? (string) $r['linked_usuario_id']
                 : null,
