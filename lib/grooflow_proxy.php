@@ -217,12 +217,54 @@ function grooflow_sanitize_buk_base_url(string $raw): string
     return rtrim(((string) ($parts['scheme'] ?? 'https')) . '://' . $host . $path, '/');
 }
 
-function grooflow_build_buk_asistencia_url(string $baseUrl, int $page, int $pageSize): string
-{
+function grooflow_build_buk_asistencia_url(
+    string $baseUrl,
+    int $page,
+    int $pageSize,
+    ?string $desde = null,
+    ?string $hasta = null
+): string {
     $base = grooflow_sanitize_buk_base_url($baseUrl);
     $url = $base . '/asistencia-empresa?page=' . max(1, $page) . '&page_size=' . max(1, min(200, $pageSize));
+    // Ventana incremental (Ctrlit: DD-MM-YYYY, máx. 35 días). Default: hoy−2 … hoy.
+    if ($desde === null || $hasta === null || $desde === '' || $hasta === '') {
+        $hastaDt = new DateTimeImmutable('today');
+        $desdeDt = $hastaDt->modify('-2 days');
+        $desde = $desdeDt->format('d-m-Y');
+        $hasta = $hastaDt->format('d-m-Y');
+    }
+    $url .= '&desde=' . rawurlencode($desde) . '&hasta=' . rawurlencode($hasta);
 
     return $url;
+}
+
+/**
+ * Asegura obra_id / id_recinto / codigo_recinto para mapear huellero → sede.
+ *
+ * @param array<string, mixed> $r
+ * @return array<string, mixed>
+ */
+function grooflow_buk_normalize_asistencia_record(array $r): array
+{
+    $obra = (int) ($r['obra_id'] ?? $r['id_recinto'] ?? $r['obraId'] ?? 0);
+    if ($obra > 0) {
+        $r['obra_id'] = $obra;
+        if (empty($r['id_recinto'])) {
+            $r['id_recinto'] = $obra;
+        }
+        $code = trim((string) ($r['codigo_recinto'] ?? ''));
+        if ($code === '') {
+            $r['codigo_recinto'] = (string) $obra;
+        }
+    }
+    if (empty($r['rut_trabajador'])) {
+        $dni = trim((string) ($r['DNI'] ?? $r['dni'] ?? ''));
+        if ($dni !== '') {
+            $r['rut_trabajador'] = $dni;
+        }
+    }
+
+    return $r;
 }
 
 /** @return array{records: list<array<string, mixed>>, totalPages: int, count: int} */
@@ -233,7 +275,11 @@ function grooflow_parse_buk_asistencia_page(mixed $json): array
     }
     $records = [];
     if (isset($json['data']) && is_array($json['data'])) {
-        $records = $json['data'];
+        foreach ($json['data'] as $row) {
+            if (is_array($row)) {
+                $records[] = grooflow_buk_normalize_asistencia_record($row);
+            }
+        }
     }
     $pagination = is_array($json['pagination'] ?? null) ? $json['pagination'] : [];
     $totalPages = max(1, (int) ($pagination['totalPages'] ?? 1));
@@ -248,9 +294,11 @@ function grooflow_buk_fetch_page(
     string $apiToken,
     int $page,
     int $pageSize,
-    int $timeoutSec = 45
+    int $timeoutSec = 45,
+    ?string $desde = null,
+    ?string $hasta = null
 ): array {
-    $url = grooflow_build_buk_asistencia_url($baseUrl, $page, $pageSize);
+    $url = grooflow_build_buk_asistencia_url($baseUrl, $page, $pageSize, $desde, $hasta);
     grooflow_assert_buk_url($url);
     $res = grooflow_proxy_fetch($url, [
         'token: ' . $apiToken,
@@ -352,6 +400,10 @@ function grooflow_handle_buk(PDO $pdo, string $action, array $data): array
     $page = max(1, (int) ($data['page'] ?? 1));
     $pageSize = max(1, min(200, (int) ($data['pageSize'] ?? $data['perPage'] ?? 100)));
     $maxPages = max(1, min(100, (int) ($data['maxPages'] ?? 50)));
+    $desde = trim((string) ($data['desde'] ?? $data['from'] ?? ''));
+    $hasta = trim((string) ($data['hasta'] ?? $data['to'] ?? ''));
+    $desde = $desde !== '' ? $desde : null;
+    $hasta = $hasta !== '' ? $hasta : null;
     $started = (int) round(microtime(true) * 1000);
 
     if ($action === 'test') {
@@ -415,7 +467,7 @@ function grooflow_handle_buk(PDO $pdo, string $action, array $data): array
     }
 
     if ($action === 'fetch') {
-        $pageRes = grooflow_buk_fetch_page($baseUrl, $apiToken, $page, $pageSize, 45);
+        $pageRes = grooflow_buk_fetch_page($baseUrl, $apiToken, $page, $pageSize, 45, $desde, $hasta);
         $duration = (int) round(microtime(true) * 1000) - $started;
         if ($pageRes['status'] < 200 || $pageRes['status'] >= 300) {
             return [
@@ -441,7 +493,7 @@ function grooflow_handle_buk(PDO $pdo, string $action, array $data): array
 
     // fetch-all: paginar hasta maxPages
     $all = [];
-    $first = grooflow_buk_fetch_page($baseUrl, $apiToken, 1, $pageSize, 120);
+    $first = grooflow_buk_fetch_page($baseUrl, $apiToken, 1, $pageSize, 120, $desde, $hasta);
     if ($first['status'] < 200 || $first['status'] >= 300) {
         $duration = (int) round(microtime(true) * 1000) - $started;
 
@@ -458,7 +510,7 @@ function grooflow_handle_buk(PDO $pdo, string $action, array $data): array
     $reportedTotalPages = max(1, (int) $first['totalPages']);
     $totalPages = min($reportedTotalPages, $maxPages);
     for ($p = 2; $p <= $totalPages; $p++) {
-        $next = grooflow_buk_fetch_page($baseUrl, $apiToken, $p, $pageSize, 120);
+        $next = grooflow_buk_fetch_page($baseUrl, $apiToken, $p, $pageSize, 120, $desde, $hasta);
         if ($next['status'] < 200 || $next['status'] >= 300) {
             break;
         }
