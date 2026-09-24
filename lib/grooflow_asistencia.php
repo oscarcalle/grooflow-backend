@@ -50,6 +50,11 @@ function grooflow_asistencia_ensure_schema(PDO $pdo): void
                 'ALTER TABLE grooflow_asistencia_meta ADD COLUMN cost_center_sede_mappings_json JSON NULL AFTER area_keywords_json'
             );
         }
+        if (! isset($have['dispositivo_sede_mappings_json'])) {
+            $pdo->exec(
+                'ALTER TABLE grooflow_asistencia_meta ADD COLUMN dispositivo_sede_mappings_json JSON NULL AFTER cost_center_sede_mappings_json'
+            );
+        }
     } catch (Throwable $e) {
         // ignore race / already exists
     }
@@ -225,10 +230,11 @@ function grooflow_asistencia_compose_settings(PDO $pdo): array
         ],
         'sedeMappings' => [],
         'costCenterSedeMappings' => [],
+        'dispositivoSedeMappings' => [],
     ];
 
     $meta = $pdo->query(
-        "SELECT buk_json, area_keywords_json, cost_center_sede_mappings_json
+        "SELECT buk_json, area_keywords_json, cost_center_sede_mappings_json, dispositivo_sede_mappings_json
          FROM grooflow_asistencia_meta WHERE id = 'default' LIMIT 1"
     )->fetch(PDO::FETCH_ASSOC);
     if (is_array($meta)) {
@@ -245,6 +251,12 @@ function grooflow_asistencia_compose_settings(PDO $pdo): array
         );
         if (is_array($ccMaps)) {
             $settings['costCenterSedeMappings'] = $ccMaps;
+        }
+        $devMaps = grooflow_json_decode(
+            isset($meta['dispositivo_sede_mappings_json']) ? (string) $meta['dispositivo_sede_mappings_json'] : null
+        );
+        if (is_array($devMaps)) {
+            $settings['dispositivoSedeMappings'] = $devMaps;
         }
     }
 
@@ -291,19 +303,25 @@ function grooflow_asistencia_sync_settings_tables(PDO $pdo, array $settings): vo
     $ccMaps = isset($settings['costCenterSedeMappings']) && is_array($settings['costCenterSedeMappings'])
         ? $settings['costCenterSedeMappings']
         : [];
+    $devMaps = isset($settings['dispositivoSedeMappings']) && is_array($settings['dispositivoSedeMappings'])
+        ? $settings['dispositivoSedeMappings']
+        : [];
 
     $metaStmt = $pdo->prepare('
-        INSERT INTO grooflow_asistencia_meta (id, buk_json, area_keywords_json, cost_center_sede_mappings_json)
-        VALUES (\'default\', ?, ?, ?)
+        INSERT INTO grooflow_asistencia_meta
+            (id, buk_json, area_keywords_json, cost_center_sede_mappings_json, dispositivo_sede_mappings_json)
+        VALUES (\'default\', ?, ?, ?, ?)
         ON DUPLICATE KEY UPDATE
             buk_json = VALUES(buk_json),
             area_keywords_json = VALUES(area_keywords_json),
-            cost_center_sede_mappings_json = VALUES(cost_center_sede_mappings_json)
+            cost_center_sede_mappings_json = VALUES(cost_center_sede_mappings_json),
+            dispositivo_sede_mappings_json = VALUES(dispositivo_sede_mappings_json)
     ');
     $metaStmt->execute([
         grooflow_json_encode($buk),
         grooflow_json_encode($keywords),
         grooflow_json_encode($ccMaps),
+        grooflow_json_encode($devMaps),
     ]);
 
     // Staff
@@ -510,6 +528,15 @@ function grooflow_asistencia_get_settings(PDO $pdo): ?array
             && $blob['costCenterSedeMappings'] !== []
         ) {
             $composed['costCenterSedeMappings'] = $blob['costCenterSedeMappings'];
+        }
+        // Legacy: mapa dispositivo → sede desde blob si meta aún no lo tiene.
+        if (
+            is_array($blob)
+            && is_array($blob['dispositivoSedeMappings'] ?? null)
+            && ($composed['dispositivoSedeMappings'] ?? []) === []
+            && $blob['dispositivoSedeMappings'] !== []
+        ) {
+            $composed['dispositivoSedeMappings'] = $blob['dispositivoSedeMappings'];
         }
 
         return $composed;
