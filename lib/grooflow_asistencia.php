@@ -733,14 +733,123 @@ function grooflow_asistencia_backfill_role_permissions(PDO $pdo): void
     }
 }
 
-/** Clave de merge alineada con el frontend (bukRecordMergeKey). */
+/** Cuerpo RUT/DNI alineado con asistenciaRutMatchKey del frontend. */
+function grooflow_asistencia_buk_rut_body(?string $raw): string
+{
+    $n = strtoupper((string) preg_replace('/[.\-\s]/', '', (string) $raw));
+    if ($n === '') {
+        return '';
+    }
+    $body = $n;
+    if (preg_match('/^\d{7,8}K$/', $n)) {
+        $body = substr($n, 0, -1);
+    } elseif (preg_match('/^\d{8}[0-9]$/', $n) && strlen($n) === 9) {
+        $body = substr($n, 0, -1);
+    } elseif (! preg_match('/^\d+$/', $n)) {
+        return $n;
+    }
+    $stripped = ltrim($body, '0');
+
+    return strlen($stripped) >= 6 ? $stripped : $body;
+}
+
+/** Normaliza dia_entrada a dd/MM/yyyy (misma clave que FE normalizeDiaEntradaKey). */
+function grooflow_asistencia_buk_dia_dmy(array $r): ?string
+{
+    $dia = trim((string) ($r['dia_entrada'] ?? ''));
+    if ($dia !== '' && preg_match('#^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})$#', $dia, $m)) {
+        return sprintf('%02d/%02d/%04d', (int) $m[1], (int) $m[2], (int) $m[3]);
+    }
+    if ($dia !== '' && preg_match('#^(\d{4})[/\-.](\d{1,2})[/\-.](\d{1,2})$#', $dia, $m)) {
+        return sprintf('%02d/%02d/%04d', (int) $m[3], (int) $m[2], (int) $m[1]);
+    }
+    $entrada = trim((string) ($r['entrada'] ?? ''));
+    if ($entrada !== '') {
+        $ts = strtotime($entrada);
+        if ($ts !== false) {
+            return date('d/m/Y', $ts);
+        }
+    }
+
+    return null;
+}
+
+/** Clave de merge alineada con bukRecordMergeKey (rd:rut|día). */
 function grooflow_asistencia_buk_merge_key(array $r): string
 {
+    $rut = grooflow_asistencia_buk_rut_body(isset($r['rut_trabajador']) ? (string) $r['rut_trabajador'] : null);
+    $dia = grooflow_asistencia_buk_dia_dmy($r);
+    if ($rut !== '' && $dia !== null && $dia !== '') {
+        return 'rd:' . $rut . '|' . $dia;
+    }
     if (isset($r['id']) && $r['id'] !== null && $r['id'] !== '') {
         return 'id:' . (string) $r['id'];
     }
 
     return 'r:' . (string) ($r['trab_id'] ?? '') . ':' . (string) ($r['dia_entrada'] ?? '') . ':' . (string) ($r['rut_trabajador'] ?? '');
+}
+
+/** Puntuación de riqueza del payload (alineada con preferRicherBukRecord FE). */
+function grooflow_asistencia_buk_record_richness(array $r): int
+{
+    $score = 0;
+    $entradaFmt = trim((string) ($r['entrada_format'] ?? ''));
+    $entrada = trim((string) ($r['entrada'] ?? ''));
+    if ($entradaFmt !== '' || ($entrada !== '' && $entrada !== '-' && strtolower($entrada) !== 'null')) {
+        $score += 8;
+    }
+    if (trim((string) ($r['dispositivo'] ?? '')) !== '') {
+        $score += 4;
+    }
+    if (trim((string) ($r['nombre'] ?? '')) !== '') {
+        $score += 2;
+    }
+    if (trim((string) ($r['salida'] ?? '')) !== '' || trim((string) ($r['salida_format'] ?? '')) !== '') {
+        $score += 1;
+    }
+    if (isset($r['obra_id']) || trim((string) ($r['codigo_recinto'] ?? '')) !== '') {
+        $score += 1;
+    }
+
+    return $score;
+}
+
+/**
+ * Fusiona payloads: conserva el más rico y rellena huecos.
+ *
+ * @param array<string, mixed> $a
+ * @param array<string, mixed> $b
+ * @return array<string, mixed>
+ */
+function grooflow_asistencia_buk_prefer_richer(array $a, array $b): array
+{
+    $sa = grooflow_asistencia_buk_record_richness($a);
+    $sb = grooflow_asistencia_buk_record_richness($b);
+    $base = $sb > $sa ? array_merge($a, $b) : ($sa > $sb ? array_merge($b, $a) : array_merge($a, $b));
+    $fillKeys = [
+        'nombre', 'apellido_paterno', 'apellido_materno', 'dispositivo',
+        'entrada', 'salida', 'entrada_format', 'salida_format',
+        'obra_id', 'codigo_recinto', 'nombre_recinto', 'area', 'especialidad',
+    ];
+    $older = $sb > $sa ? $a : $b;
+    $newer = $sb > $sa ? $b : $a;
+    if ($sa === $sb) {
+        $older = $a;
+        $newer = $b;
+    }
+    foreach ($fillKeys as $k) {
+        $nv = $newer[$k] ?? null;
+        $ov = $older[$k] ?? null;
+        $nEmpty = $nv === null || $nv === '' || $nv === '-';
+        $oEmpty = $ov === null || $ov === '' || $ov === '-';
+        if ($nEmpty && ! $oEmpty) {
+            $base[$k] = $ov;
+        } elseif (! $nEmpty) {
+            $base[$k] = $nv;
+        }
+    }
+
+    return $base;
 }
 
 /** Normaliza dia_entrada Buk (dd/MM/yyyy) o ISO a Y-m-d. */
@@ -788,6 +897,7 @@ function grooflow_asistencia_buk_records_upsert(PDO $pdo, array $records, ?strin
 {
     grooflow_asistencia_ensure_schema($pdo);
     $fetchedAt = $fetchedAt ?: date('Y-m-d H:i:s');
+    $sel = $pdo->prepare('SELECT payload FROM grooflow_asistencia_buk_records WHERE merge_key = ? LIMIT 1');
     $sql = '
         INSERT INTO grooflow_asistencia_buk_records
             (merge_key, buk_id, trab_id, rut_trabajador, dia_entrada, dia_entrada_ymd,
@@ -817,23 +927,32 @@ function grooflow_asistencia_buk_records_upsert(PDO $pdo, array $records, ?strin
                 continue;
             }
             $mergeKey = grooflow_asistencia_buk_merge_key($r);
-            if ($mergeKey === 'id:' || $mergeKey === 'r:::') {
+            if ($mergeKey === 'id:' || $mergeKey === 'r:::' || str_starts_with($mergeKey, 'rd:|')) {
                 continue;
+            }
+            $merged = $r;
+            $sel->execute([$mergeKey]);
+            $prevRow = $sel->fetch(PDO::FETCH_ASSOC);
+            if (is_array($prevRow) && ! empty($prevRow['payload'])) {
+                $prev = json_decode((string) $prevRow['payload'], true);
+                if (is_array($prev)) {
+                    $merged = grooflow_asistencia_buk_prefer_richer($prev, $r);
+                }
             }
             $stmt->execute([
                 $mergeKey,
-                isset($r['id']) && is_numeric($r['id']) ? (int) $r['id'] : null,
-                isset($r['trab_id']) && is_numeric($r['trab_id']) ? (int) $r['trab_id'] : null,
-                isset($r['rut_trabajador']) ? (string) $r['rut_trabajador'] : null,
-                isset($r['dia_entrada']) ? (string) $r['dia_entrada'] : null,
-                grooflow_asistencia_buk_dia_ymd($r),
-                isset($r['codigo_recinto']) ? (string) $r['codigo_recinto'] : null,
-                isset($r['nombre_recinto']) ? (string) $r['nombre_recinto'] : null,
-                isset($r['area']) ? (string) $r['area'] : null,
-                isset($r['especialidad']) ? (string) $r['especialidad'] : null,
-                grooflow_asistencia_buk_parse_dt(isset($r['entrada']) ? (string) $r['entrada'] : null),
-                grooflow_asistencia_buk_parse_dt(isset($r['salida']) ? (string) $r['salida'] : null),
-                grooflow_json_encode($r),
+                isset($merged['id']) && is_numeric($merged['id']) ? (int) $merged['id'] : null,
+                isset($merged['trab_id']) && is_numeric($merged['trab_id']) ? (int) $merged['trab_id'] : null,
+                isset($merged['rut_trabajador']) ? (string) $merged['rut_trabajador'] : null,
+                isset($merged['dia_entrada']) ? (string) $merged['dia_entrada'] : null,
+                grooflow_asistencia_buk_dia_ymd($merged),
+                isset($merged['codigo_recinto']) ? (string) $merged['codigo_recinto'] : null,
+                isset($merged['nombre_recinto']) ? (string) $merged['nombre_recinto'] : null,
+                isset($merged['area']) ? (string) $merged['area'] : null,
+                isset($merged['especialidad']) ? (string) $merged['especialidad'] : null,
+                grooflow_asistencia_buk_parse_dt(isset($merged['entrada']) ? (string) $merged['entrada'] : null),
+                grooflow_asistencia_buk_parse_dt(isset($merged['salida']) ? (string) $merged['salida'] : null),
+                grooflow_json_encode($merged),
                 $fetchedAt,
             ]);
             $upserted++;
