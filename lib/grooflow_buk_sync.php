@@ -340,21 +340,7 @@ function grooflow_buk_fetch_turnos_all(string $apiRoot, string $apiToken): array
  */
 function grooflow_buk_fetch_asistencia_today(string $v2Base, string $apiToken, int $maxPages = 40): array
 {
-    $pageRes = grooflow_buk_fetch_page($v2Base, $apiToken, 1, 100, 90);
-    if ($pageRes['status'] < 200 || $pageRes['status'] >= 300) {
-        throw new RuntimeException('Asistencia Buk HTTP ' . $pageRes['status'] . ' — ' . $pageRes['triedUrl']);
-    }
-    $all = $pageRes['records'];
-    $totalPages = min($pageRes['totalPages'], $maxPages);
-    for ($p = 2; $p <= $totalPages; $p++) {
-        $next = grooflow_buk_fetch_page($v2Base, $apiToken, $p, 100, 90);
-        if ($next['status'] < 200 || $next['status'] >= 300) {
-            break;
-        }
-        $all = array_merge($all, $next['records']);
-    }
-
-    return $all;
+    return grooflow_buk_fetch_asistencia_with_dispositivos($v2Base, $apiToken, $maxPages);
 }
 
 /**

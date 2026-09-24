@@ -188,7 +188,7 @@ function grooflow_asistencia_marcaciones_pipeline_if_due(PDO $pdo, array $option
 
     try {
         $base = grooflow_sanitize_buk_base_url((string) ($buk['apiBaseUrl'] ?? ''));
-        $records = grooflow_buk_fetch_asistencia_today($base, $token, $maxPages);
+        $records = grooflow_buk_fetch_asistencia_with_dispositivos($base, $token, $maxPages);
         $upsert = grooflow_asistencia_buk_records_upsert($pdo, $records);
         $at = date('c');
         $buk['lastMarcacionesPipelineAt'] = $at;

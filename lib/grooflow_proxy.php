@@ -226,10 +226,10 @@ function grooflow_build_buk_asistencia_url(
 ): string {
     $base = grooflow_sanitize_buk_base_url($baseUrl);
     $url = $base . '/asistencia-empresa?page=' . max(1, $page) . '&page_size=' . max(1, min(200, $pageSize));
-    // Ventana incremental (Ctrlit: DD-MM-YYYY, máx. 35 días). Default: hoy−2 … hoy.
+    // Ventana incremental (Ctrlit: DD-MM-YYYY, máx. 35 días). Default: 1 semana.
     if ($desde === null || $hasta === null || $desde === '' || $hasta === '') {
         $hastaDt = new DateTimeImmutable('today');
-        $desdeDt = $hastaDt->modify('-2 days');
+        $desdeDt = $hastaDt->modify('-7 days');
         $desde = $desdeDt->format('d-m-Y');
         $hasta = $hastaDt->format('d-m-Y');
     }
@@ -261,6 +261,16 @@ function grooflow_buk_normalize_asistencia_record(array $r): array
         $dni = trim((string) ($r['DNI'] ?? $r['dni'] ?? ''));
         if ($dni !== '') {
             $r['rut_trabajador'] = $dni;
+        }
+    }
+    $device = strtoupper(preg_replace('/\s+/', '', trim((string) ($r['dispositivo'] ?? ''))));
+    if ($device !== '') {
+        $r['dispositivo'] = $device;
+        if (trim((string) ($r['codigo_recinto'] ?? '')) === '' || ctype_digit(trim((string) ($r['codigo_recinto'] ?? '')))) {
+            // Preferir ID de dispositivo como código visible cuando no hay otro código útil.
+            if ($device !== '') {
+                $r['codigo_recinto'] = $device;
+            }
         }
     }
 
@@ -314,6 +324,274 @@ function grooflow_buk_fetch_page(
         'count' => $parsed['count'],
         'triedUrl' => $url,
     ];
+}
+
+/** Base Ctrlit sin /v2 (obtenerRegistroAsistencia). */
+function grooflow_ctrlit_api_root(string $v2Base): string
+{
+    $base = grooflow_sanitize_buk_base_url($v2Base);
+    $root = preg_replace('#/api/v2/?$#i', '/api', $base);
+    $root = rtrim((string) $root, '/');
+
+    return $root !== '' ? $root : 'https://app.ctrlit.cl/ctrl/api';
+}
+
+function grooflow_build_obtener_registro_url(
+    string $apiRoot,
+    int $obraId,
+    string $fromDdMmYyyy,
+    string $toDdMmYyyy,
+    int $page = 1,
+    int $pageSize = 100
+): string {
+    $root = rtrim($apiRoot, '/');
+
+    return $root
+        . '/obtenerRegistroAsistencia?obra_id=' . max(1, $obraId)
+        . '&from=' . rawurlencode($fromDdMmYyyy)
+        . '&to=' . rawurlencode($toDdMmYyyy)
+        . '&page=' . max(1, $page)
+        . '&page_size=' . max(1, min(100, $pageSize));
+}
+
+/**
+ * @param list<array<string, mixed>> $punches
+ * @return list<array<string, mixed>>
+ */
+function grooflow_buk_aggregate_registro_punches(array $punches): array
+{
+    $byKey = [];
+    foreach ($punches as $p) {
+        if (! is_array($p)) {
+            continue;
+        }
+        $obra = (int) ($p['obra_id'] ?? 0);
+        $dni = preg_replace('/\D+/', '', (string) ($p['DNI'] ?? $p['dni'] ?? ''));
+        $ano = (int) ($p['ano'] ?? 0);
+        $mes = (int) ($p['mes'] ?? 0);
+        $dia = (int) ($p['dia'] ?? 0);
+        if ($obra <= 0 || $dni === '' || $ano <= 0 || $mes <= 0 || $dia <= 0) {
+            continue;
+        }
+        $ymd = sprintf('%04d-%02d-%02d', $ano, $mes, $dia);
+        $diaEntrada = sprintf('%02d/%02d/%04d', $dia, $mes, $ano);
+        $iso = sprintf(
+            '%sT%02d:%02d:%02d',
+            $ymd,
+            (int) ($p['hora'] ?? 0),
+            (int) ($p['minutos'] ?? 0),
+            (int) ($p['segundos'] ?? 0)
+        );
+        $sentido = strtolower(trim((string) ($p['sentido'] ?? '')));
+        $device = strtoupper(preg_replace('/\s+/', '', trim((string) ($p['dispositivo'] ?? ''))));
+        $key = $dni . '|' . $ymd;
+        if (! isset($byKey[$key])) {
+            $byKey[$key] = [
+                'obra_id' => $obra,
+                'dni' => $dni,
+                'dia_entrada' => $diaEntrada,
+                'dispositivo' => $device !== '' ? $device : null,
+                'entrada' => null,
+                'salida' => null,
+            ];
+        }
+        $acc = &$byKey[$key];
+        if ($sentido === 'entrada') {
+            if ($acc['entrada'] === null || $iso < $acc['entrada']) {
+                $acc['entrada'] = $iso;
+                if ($device !== '') {
+                    $acc['dispositivo'] = $device;
+                }
+                $acc['obra_id'] = $obra;
+            }
+        } elseif ($sentido === 'salida') {
+            if ($acc['salida'] === null || $iso > $acc['salida']) {
+                $acc['salida'] = $iso;
+            }
+        } elseif ($acc['entrada'] === null) {
+            $acc['entrada'] = $iso;
+            if ($device !== '') {
+                $acc['dispositivo'] = $device;
+            }
+            $acc['obra_id'] = $obra;
+        } elseif ($acc['salida'] === null || $iso > $acc['salida']) {
+            $acc['salida'] = $iso;
+        }
+        if (empty($acc['dispositivo']) && $device !== '') {
+            $acc['dispositivo'] = $device;
+        }
+        unset($acc);
+    }
+
+    $out = [];
+    foreach ($byKey as $acc) {
+        if ($acc['entrada'] === null && $acc['salida'] === null) {
+            continue;
+        }
+        $obra = (int) $acc['obra_id'];
+        $dni = (string) $acc['dni'];
+        $device = $acc['dispositivo'] ? (string) $acc['dispositivo'] : null;
+        $out[] = grooflow_buk_normalize_asistencia_record([
+            'id' => (int) ($obra . substr($dni, -4) . substr(str_replace('-', '', (string) ($acc['entrada'] ?? $acc['salida'])), 0, 8)),
+            'trab_id' => 0,
+            'rut_trabajador' => $dni,
+            'nombre' => '',
+            'obra_id' => $obra,
+            'id_recinto' => $obra,
+            'codigo_recinto' => $device ?: (string) $obra,
+            'dispositivo' => $device,
+            'dia_entrada' => $acc['dia_entrada'],
+            'entrada' => $acc['entrada'],
+            'salida' => $acc['salida'],
+            'entrada_format' => $acc['entrada'] ? substr((string) $acc['entrada'], 11, 5) : null,
+            'salida_format' => $acc['salida'] ? substr((string) $acc['salida'], 11, 5) : null,
+        ]);
+    }
+
+    return $out;
+}
+
+/**
+ * @return list<array<string, mixed>>
+ */
+function grooflow_buk_fetch_registro_obra(
+    string $apiRoot,
+    string $apiToken,
+    int $obraId,
+    string $fromDdMmYyyy,
+    string $toDdMmYyyy,
+    int $maxPages = 40
+): array {
+    $all = [];
+    $firstUrl = grooflow_build_obtener_registro_url($apiRoot, $obraId, $fromDdMmYyyy, $toDdMmYyyy, 1, 100);
+    grooflow_assert_buk_url($firstUrl);
+    $res = grooflow_proxy_fetch($firstUrl, [
+        'token: ' . $apiToken,
+        'Accept: application/json',
+    ], 90);
+    if ($res['status'] < 200 || $res['status'] >= 300) {
+        return [];
+    }
+    $json = json_decode($res['body'], true);
+    $pageRecords = is_array($json['data'] ?? null) ? $json['data'] : [];
+    $all = array_merge($all, $pageRecords);
+    $totalPages = max(1, (int) (($json['pagination']['totalPages'] ?? 1)));
+    $totalPages = min($totalPages, $maxPages);
+    for ($p = 2; $p <= $totalPages; $p++) {
+        $url = grooflow_build_obtener_registro_url($apiRoot, $obraId, $fromDdMmYyyy, $toDdMmYyyy, $p, 100);
+        grooflow_assert_buk_url($url);
+        $next = grooflow_proxy_fetch($url, [
+            'token: ' . $apiToken,
+            'Accept: application/json',
+        ], 90);
+        if ($next['status'] < 200 || $next['status'] >= 300) {
+            break;
+        }
+        $njson = json_decode($next['body'], true);
+        $chunk = is_array($njson['data'] ?? null) ? $njson['data'] : [];
+        $all = array_merge($all, $chunk);
+    }
+
+    return $all;
+}
+
+/**
+ * @param list<array<string, mixed>> $empresa
+ * @param list<array<string, mixed>> $registro
+ * @return list<array<string, mixed>>
+ */
+function grooflow_buk_merge_empresa_registro(array $empresa, array $registro): array
+{
+    $byKey = [];
+    $keyOf = static function (array $r): string {
+        $rut = preg_replace('/\D+/', '', (string) ($r['rut_trabajador'] ?? ''));
+
+        return $rut . '|' . trim((string) ($r['dia_entrada'] ?? ''));
+    };
+    foreach ($empresa as $r) {
+        if (! is_array($r)) {
+            continue;
+        }
+        $n = grooflow_buk_normalize_asistencia_record($r);
+        $byKey[$keyOf($n)] = $n;
+    }
+    foreach ($registro as $r) {
+        if (! is_array($r)) {
+            continue;
+        }
+        $n = grooflow_buk_normalize_asistencia_record($r);
+        $k = $keyOf($n);
+        $prev = $byKey[$k] ?? null;
+        if (! is_array($prev)) {
+            $byKey[$k] = $n;
+            continue;
+        }
+        $byKey[$k] = array_merge($prev, $n, [
+            'nombre' => ($prev['nombre'] ?? '') !== '' ? $prev['nombre'] : ($n['nombre'] ?? ''),
+            'apellido_paterno' => ($prev['apellido_paterno'] ?? null) ?: ($n['apellido_paterno'] ?? null),
+            'apellido_materno' => ($prev['apellido_materno'] ?? null) ?: ($n['apellido_materno'] ?? null),
+            'area' => ($prev['area'] ?? null) ?: ($n['area'] ?? null),
+            'especialidad' => ($prev['especialidad'] ?? null) ?: ($n['especialidad'] ?? null),
+            'turno' => ($prev['turno'] ?? null) ?: ($n['turno'] ?? null),
+            'nombre_recinto' => ($prev['nombre_recinto'] ?? null) ?: ($n['nombre_recinto'] ?? null),
+            'dispositivo' => ($n['dispositivo'] ?? null) ?: ($prev['dispositivo'] ?? null),
+            'codigo_recinto' => ($n['dispositivo'] ?? null)
+                ?: (($n['codigo_recinto'] ?? null) ?: ($prev['codigo_recinto'] ?? null)),
+        ]);
+    }
+
+    return array_values($byKey);
+}
+
+/**
+ * Asistencia empresa (7 días) + obtenerRegistroAsistencia (dispositivo huellero).
+ *
+ * @return list<array<string, mixed>>
+ */
+function grooflow_buk_fetch_asistencia_with_dispositivos(
+    string $v2Base,
+    string $apiToken,
+    int $maxPages = 40,
+    ?string $desde = null,
+    ?string $hasta = null
+): array {
+    if ($desde === null || $hasta === null || $desde === '' || $hasta === '') {
+        $hastaDt = new DateTimeImmutable('today');
+        $desdeDt = $hastaDt->modify('-7 days');
+        $desde = $desdeDt->format('d-m-Y');
+        $hasta = $hastaDt->format('d-m-Y');
+    }
+    $empresa = [];
+    $first = grooflow_buk_fetch_page($v2Base, $apiToken, 1, 100, 90, $desde, $hasta);
+    if ($first['status'] < 200 || $first['status'] >= 300) {
+        throw new RuntimeException('Asistencia Buk HTTP ' . $first['status'] . ' — ' . $first['triedUrl']);
+    }
+    $empresa = array_merge($empresa, $first['records']);
+    $totalPages = min((int) $first['totalPages'], $maxPages);
+    for ($p = 2; $p <= $totalPages; $p++) {
+        $next = grooflow_buk_fetch_page($v2Base, $apiToken, $p, 100, 90, $desde, $hasta);
+        if ($next['status'] < 200 || $next['status'] >= 300) {
+            break;
+        }
+        $empresa = array_merge($empresa, $next['records']);
+    }
+
+    $obraIds = [];
+    foreach ($empresa as $r) {
+        $oid = (int) ($r['obra_id'] ?? $r['id_recinto'] ?? 0);
+        if ($oid > 0) {
+            $obraIds[$oid] = true;
+        }
+    }
+    $apiRoot = grooflow_ctrlit_api_root($v2Base);
+    $punches = [];
+    foreach (array_keys($obraIds) as $obraId) {
+        $chunk = grooflow_buk_fetch_registro_obra($apiRoot, $apiToken, (int) $obraId, $desde, $hasta, 20);
+        $punches = array_merge($punches, $chunk);
+    }
+    $registro = grooflow_buk_aggregate_registro_punches($punches);
+
+    return grooflow_buk_merge_empresa_registro($empresa, $registro);
 }
 
 function grooflow_handle_veterinari_test(array $data): array
@@ -491,43 +769,40 @@ function grooflow_handle_buk(PDO $pdo, string $action, array $data): array
         ];
     }
 
-    // fetch-all: paginar hasta maxPages
-    $all = [];
-    $first = grooflow_buk_fetch_page($baseUrl, $apiToken, 1, $pageSize, 120, $desde, $hasta);
-    if ($first['status'] < 200 || $first['status'] >= 300) {
+    // fetch-all: semana incremental + dispositivo huellero (obtenerRegistroAsistencia)
+    try {
+        $all = grooflow_buk_fetch_asistencia_with_dispositivos(
+            $baseUrl,
+            $apiToken,
+            $maxPages,
+            $desde,
+            $hasta
+        );
+        $duration = (int) round(microtime(true) * 1000) - $started;
+
+        return [
+            'ok' => true,
+            'status' => 200,
+            'data' => $all,
+            'totalPages' => 1,
+            'reportedTotalPages' => 1,
+            'truncated' => false,
+            'triedUrl' => grooflow_build_buk_asistencia_url($baseUrl, 1, $pageSize, $desde, $hasta),
+            'durationMs' => $duration,
+            'enrichedDispositivo' => true,
+        ];
+    } catch (Throwable $e) {
         $duration = (int) round(microtime(true) * 1000) - $started;
 
         return [
             'ok' => false,
-            'status' => $first['status'],
-            'message' => 'HTTP ' . $first['status'] . ' — URL: ' . $first['triedUrl'],
+            'status' => 502,
+            'message' => $e->getMessage(),
             'data' => [],
-            'triedUrl' => $first['triedUrl'],
+            'triedUrl' => grooflow_build_buk_asistencia_url($baseUrl, 1, $pageSize, $desde, $hasta),
             'durationMs' => $duration,
         ];
     }
-    $all = array_merge($all, $first['records']);
-    $reportedTotalPages = max(1, (int) $first['totalPages']);
-    $totalPages = min($reportedTotalPages, $maxPages);
-    for ($p = 2; $p <= $totalPages; $p++) {
-        $next = grooflow_buk_fetch_page($baseUrl, $apiToken, $p, $pageSize, 120, $desde, $hasta);
-        if ($next['status'] < 200 || $next['status'] >= 300) {
-            break;
-        }
-        $all = array_merge($all, $next['records']);
-    }
-    $duration = (int) round(microtime(true) * 1000) - $started;
-
-    return [
-        'ok' => true,
-        'status' => $first['status'],
-        'data' => $all,
-        'totalPages' => $totalPages,
-        'reportedTotalPages' => $reportedTotalPages,
-        'truncated' => $reportedTotalPages > $maxPages,
-        'triedUrl' => $first['triedUrl'],
-        'durationMs' => $duration,
-    ];
 }
 
 function grooflow_assert_buk_pe_url(string $url): void
