@@ -584,6 +584,8 @@ function grooflow_buk_fetch_asistencia_with_dispositivos(
             $obraIds[$oid] = true;
         }
     }
+    // Obra genérica Ctrlit (a menudo concentra huelleros UDP/SPK).
+    $obraIds[1] = true;
     $apiRoot = grooflow_ctrlit_api_root($v2Base);
     $punches = [];
     foreach (array_keys($obraIds) as $obraId) {
