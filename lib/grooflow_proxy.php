@@ -408,14 +408,15 @@ function grooflow_buk_aggregate_registro_punches(array $punches): array
             if ($acc['salida'] === null || $iso > $acc['salida']) {
                 $acc['salida'] = $iso;
             }
-        } elseif ($acc['entrada'] === null) {
-            $acc['entrada'] = $iso;
-            if ($device !== '') {
-                $acc['dispositivo'] = $device;
+        } else {
+            // Sin sentido: solo toma entrada (no inventar salida).
+            if ($acc['entrada'] === null || $iso < $acc['entrada']) {
+                $acc['entrada'] = $iso;
+                if ($device !== '') {
+                    $acc['dispositivo'] = $device;
+                }
+                $acc['obra_id'] = $obra;
             }
-            $acc['obra_id'] = $obra;
-        } elseif ($acc['salida'] === null || $iso > $acc['salida']) {
-            $acc['salida'] = $iso;
         }
         if (empty($acc['dispositivo']) && $device !== '') {
             $acc['dispositivo'] = $device;
