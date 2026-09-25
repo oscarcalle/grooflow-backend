@@ -56,6 +56,7 @@ function grooflow_cost_centers_ops_ensure_schema(PDO $pdo): void
             monto DECIMAL(14,2) NOT NULL,
             moneda VARCHAR(8) NOT NULL DEFAULT 'PEN',
             concepto VARCHAR(255) NOT NULL DEFAULT '',
+            cuenta_codigo VARCHAR(32) NULL,
             sede_nombre VARCHAR(120) NULL,
             origen_tipo ENUM('manual','caja','transaccion','factura','personal') NOT NULL DEFAULT 'manual',
             origen_id VARCHAR(80) NULL,
@@ -74,9 +75,18 @@ function grooflow_cost_centers_ops_ensure_schema(PDO $pdo): void
             KEY idx_gf_gasto_periodo (periodo),
             KEY idx_gf_gasto_estado (estado),
             KEY idx_gf_gasto_colab (colaborador_id),
-            KEY idx_gf_gasto_regla (regla_id)
+            KEY idx_gf_gasto_regla (regla_id),
+            KEY idx_gf_gasto_cuenta (cuenta_codigo)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ");
+
+    // Migración aditiva: instalaciones previas sin columna cuenta_codigo
+    $cols = $pdo->query('SHOW COLUMNS FROM grooflow_gastos_cc')->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    $names = array_map(static fn ($c) => (string) ($c['Field'] ?? ''), $cols);
+    if (!in_array('cuenta_codigo', $names, true)) {
+        $pdo->exec('ALTER TABLE grooflow_gastos_cc ADD COLUMN cuenta_codigo VARCHAR(32) NULL AFTER concepto');
+        $pdo->exec('ALTER TABLE grooflow_gastos_cc ADD KEY idx_gf_gasto_cuenta (cuenta_codigo)');
+    }
 
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS grooflow_gasto_distribucion (
@@ -488,6 +498,10 @@ function grooflow_gastos_cc_save(PDO $pdo, array $data, ?int $id = null): array
     $notas = trim((string) ($data['notas'] ?? '')) ?: null;
     $createdBy = trim((string) ($data['created_by'] ?? '')) ?: null;
     $moneda = trim((string) ($data['moneda'] ?? 'PEN')) ?: 'PEN';
+    $cuentaCodigo = preg_replace('/\D+/', '', (string) ($data['cuenta_codigo'] ?? '')) ?: null;
+    if ($cuentaCodigo === '') {
+        $cuentaCodigo = null;
+    }
 
     if ($id) {
         $cur = $pdo->prepare('SELECT estado FROM grooflow_gastos_cc WHERE id=? AND is_deleted=0 LIMIT 1');
@@ -501,21 +515,21 @@ function grooflow_gastos_cc_save(PDO $pdo, array $data, ?int $id = null): array
         }
         $pdo->prepare('
             UPDATE grooflow_gastos_cc SET
-                fecha=?, monto=?, moneda=?, concepto=?, sede_nombre=?, origen_tipo=?, origen_id=?,
+                fecha=?, monto=?, moneda=?, concepto=?, cuenta_codigo=?, sede_nombre=?, origen_tipo=?, origen_id=?,
                 centro_costo_origen_id=?, tipo_asignacion=?, regla_id=?, colaborador_id=?, periodo=?, notas=?
             WHERE id=? AND is_deleted=0
         ')->execute([
-            $fecha, $monto, $moneda, $concepto, $sede, $origenTipo, $origenId,
+            $fecha, $monto, $moneda, $concepto, $cuentaCodigo, $sede, $origenTipo, $origenId,
             $ccOrigen, $tipo, $reglaId, $colab, $periodo, $notas, $id,
         ]);
     } else {
         $pdo->prepare('
             INSERT INTO grooflow_gastos_cc
-                (fecha, monto, moneda, concepto, sede_nombre, origen_tipo, origen_id,
+                (fecha, monto, moneda, concepto, cuenta_codigo, sede_nombre, origen_tipo, origen_id,
                  centro_costo_origen_id, tipo_asignacion, regla_id, colaborador_id, periodo, estado, notas, created_by)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,"pendiente",?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,"pendiente",?,?)
         ')->execute([
-            $fecha, $monto, $moneda, $concepto, $sede, $origenTipo, $origenId,
+            $fecha, $monto, $moneda, $concepto, $cuentaCodigo, $sede, $origenTipo, $origenId,
             $ccOrigen, $tipo, $reglaId, $colab, $periodo, $notas, $createdBy,
         ]);
         $id = (int) $pdo->lastInsertId();

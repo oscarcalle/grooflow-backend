@@ -1253,6 +1253,35 @@ function grooflow_dispatch(PDO $pdo): void
         api_json_response(['ok' => true, 'qa' => grooflow_mgr_qa_report($pdo, $accounts)]);
         return;
     }
+    if ($path === '/mgr-pnl/auto-map-from-chart' && $method === 'POST') {
+        try {
+            $body = api_request_json();
+            $accounts = $body['chart_accounts'] ?? [];
+            if (!is_array($accounts)) {
+                $accounts = [];
+            }
+            $result = grooflow_mgr_auto_map_from_chart($pdo, $accounts, [
+                'apply' => !empty($body['apply']),
+                'overwrite' => !empty($body['overwrite']),
+                'min_confianza' => $body['min_confianza'] ?? 'media',
+                'created_by' => $body['created_by'] ?? null,
+            ]);
+            api_json_response(['ok' => true] + $result);
+        } catch (InvalidArgumentException $e) {
+            api_json_response(['ok' => false, 'error' => $e->getMessage()], 400);
+        }
+        return;
+    }
+    if ($path === '/mgr-pnl/ingest-expense' && $method === 'POST') {
+        try {
+            api_json_response(grooflow_mgr_ingest_expense($pdo, api_request_json()));
+        } catch (InvalidArgumentException $e) {
+            api_json_response(['ok' => false, 'error' => $e->getMessage()], 400);
+        } catch (Throwable $e) {
+            api_json_response(['ok' => false, 'error' => $e->getMessage()], 500);
+        }
+        return;
+    }
     if ($path === '/mgr-pnl/statement' && $method === 'GET') {
         try {
             $periodo = (string) ($_GET['periodo'] ?? date('Y-m'));

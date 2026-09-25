@@ -1010,30 +1010,60 @@ function grooflow_mgr_pnl_statement(PDO $pdo, string $periodo): array
         ];
     }
 
-    // Gastos distribuidos → intentar mapear CC a línea P&L
+    // Gastos distribuidos → priorizar mapping por cuenta; fallback inferencia por CC
     $st = $pdo->prepare("
-        SELECT cc.codigo AS centro_codigo, ROUND(SUM(d.monto),2) AS total
+        SELECT
+            g.cuenta_codigo,
+            cc.codigo AS centro_codigo,
+            ROUND(SUM(d.monto),2) AS total
         FROM grooflow_gasto_distribucion d
         JOIN grooflow_gastos_cc g ON g.id = d.gasto_id AND g.is_deleted=0 AND g.estado='distribuido'
         JOIN grooflow_centros_costo cc ON cc.id = d.centro_costo_id
         WHERE d.is_reversed=0 AND g.periodo=?
-        GROUP BY cc.codigo
+        GROUP BY g.cuenta_codigo, cc.codigo
     ");
     $st->execute([$periodo]);
+
+    $mapByCuenta = [];
+    foreach (grooflow_mgr_mappings_list($pdo, true) as $m) {
+        $code = (string) ($m['cuenta_codigo'] ?? '');
+        if ($code === '') {
+            continue;
+        }
+        if (!isset($mapByCuenta[$code]) || (int) ($m['prioridad'] ?? 100) < (int) ($mapByCuenta[$code]['prioridad'] ?? 100)) {
+            $mapByCuenta[$code] = $m;
+        }
+    }
+
     $detail = [];
     foreach ($st->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+        $cuenta = preg_replace('/\D+/', '', (string) ($row['cuenta_codigo'] ?? '')) ?: (string) ($row['cuenta_codigo'] ?? '');
         $cc = (string) $row['centro_codigo'];
         $amt = (float) $row['total'];
-        $inf = grooflow_mgr_infer_from_cc_code($pdo, $cc);
-        $pnlCode = $inf['pnl_codigo'] ?? '05.07';
+        $pnlCode = null;
+        $tipo = 'NA';
+        $fuente = 'cc_infer';
+
+        if ($cuenta !== '' && isset($mapByCuenta[$cuenta]) && !empty($mapByCuenta[$cuenta]['pnl_codigo'])) {
+            $pnlCode = (string) $mapByCuenta[$cuenta]['pnl_codigo'];
+            $tipo = (string) ($mapByCuenta[$cuenta]['tipo_costo'] ?? 'NA');
+            $fuente = 'mapping_cuenta';
+        } else {
+            $inf = grooflow_mgr_infer_from_cc_code($pdo, $cc);
+            $pnlCode = $inf['pnl_codigo'] ?? '05.07';
+            $tipo = $inf['tipo_costo'] ?? 'NA';
+        }
+
         if (isset($byPnl[$pnlCode])) {
             $byPnl[$pnlCode]['monto'] += $amt;
         }
         $detail[] = [
+            'cuenta_codigo' => $cuenta !== '' ? $cuenta : null,
             'centro_codigo' => $cc,
             'pnl_codigo' => $pnlCode,
             'monto' => $amt,
-            'tipo_costo' => $inf['tipo_costo'] ?? 'NA',
+            'tipo_costo' => $tipo,
+            'fuente' => $fuente,
         ];
     }
 
@@ -1069,7 +1099,307 @@ function grooflow_mgr_pnl_statement(PDO $pdo, string $periodo): array
         'periodo' => $periodo,
         'lineas' => array_values($byPnl),
         'detalle_centros' => $detail,
-        'nota' => 'P&L gerencial desde distribución CC. Ventas (01) se alimentarán cuando se conecte el reconocimiento de ingresos.',
+        'nota' => 'P&L gerencial: prioriza mapping por cuenta contable; si falta, infiere por centro de costo. Ventas (01) se alimentarán con reconocimiento de ingresos.',
+    ];
+}
+
+/**
+ * Propone (y opcionalmente aplica) mappings desde el plan Starsoft.
+ * Usa classify + metadatos plFuncionGroo / centroCosto. No sobrescribe mappings activos salvo overwrite.
+ *
+ * @param list<array<string,mixed>> $accounts
+ * @param array<string,mixed> $opts apply?, overwrite?, min_confianza? (alta|media|baja), created_by?
+ * @return array<string,mixed>
+ */
+function grooflow_mgr_auto_map_from_chart(PDO $pdo, array $accounts, array $opts = []): array
+{
+    grooflow_mgr_pnl_ensure_schema($pdo);
+    $apply = !empty($opts['apply']);
+    $overwrite = !empty($opts['overwrite']);
+    $minConf = (string) ($opts['min_confianza'] ?? 'media');
+    $rank = ['baja' => 1, 'media' => 2, 'alta' => 3];
+    $minRank = $rank[$minConf] ?? 2;
+    $createdBy = trim((string) ($opts['created_by'] ?? '')) ?: null;
+
+    $existing = [];
+    foreach (grooflow_mgr_mappings_list($pdo, false) as $m) {
+        $existing[(string) $m['cuenta_codigo']] = $m;
+    }
+
+    $pnlCodes = [];
+    foreach (grooflow_mgr_pnl_lineas_list($pdo) as $ln) {
+        $pnlCodes[(string) $ln['codigo']] = true;
+    }
+
+    $ccByCode = [];
+    $ccByName = [];
+    $ccRows = $pdo->query("SELECT id, codigo, nombre FROM grooflow_centros_costo WHERE is_deleted=0")->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    foreach ($ccRows as $cc) {
+        $ccByCode[mb_strtoupper((string) $cc['codigo'])] = $cc;
+        $ccByName[mb_strtolower(trim((string) $cc['nombre']))] = $cc;
+    }
+
+    $proposals = [];
+    $applied = 0;
+    $skipped = 0;
+    $reviewed = 0;
+
+    foreach ($accounts as $acc) {
+        if (!is_array($acc)) {
+            continue;
+        }
+        if (isset($acc['active']) && !$acc['active']) {
+            continue;
+        }
+        $code = preg_replace('/\D+/', '', (string) ($acc['code'] ?? '')) ?: trim((string) ($acc['code'] ?? ''));
+        if ($code === '') {
+            continue;
+        }
+        // Priorizar clases de gasto/ingreso/costo (6*, 7*, 9*); omitir activos/pasivos típicos 1–5 sin hint
+        $first = substr($code, 0, 1);
+        $plHint = trim((string) ($acc['plFuncionGroo'] ?? $acc['plplFuncionGoo'] ?? ''));
+        $ccHint = trim((string) ($acc['centroCosto'] ?? ''));
+        $name = trim((string) ($acc['name'] ?? ''));
+        if (!in_array($first, ['6', '7', '9'], true) && $plHint === '' && $ccHint === '') {
+            continue;
+        }
+        $reviewed++;
+
+        $hasExisting = isset($existing[$code]) && (string) ($existing[$code]['estado'] ?? '') === 'activo' && (int) ($existing[$code]['is_deleted'] ?? 0) === 0;
+        if ($hasExisting && !$overwrite) {
+            $skipped++;
+            continue;
+        }
+
+        $texto = trim($name . ' ' . $plHint . ' ' . $ccHint);
+        $proposal = grooflow_mgr_classify_propose($pdo, [
+            'cuenta_codigo' => $code,
+            'cuenta_nombre' => $name,
+            'texto' => $texto,
+        ]);
+
+        // Enriquecer con metadatos Starsoft
+        if ($plHint !== '') {
+            $plNorm = preg_replace('/\s+/', '', $plHint);
+            if (isset($pnlCodes[$plNorm])) {
+                $proposal['pnl_codigo'] = $plNorm;
+                if (($proposal['confianza'] ?? 'baja') === 'baja') {
+                    $proposal['confianza'] = 'media';
+                }
+                $proposal['notas'][] = 'P&L desde PL FUNCION GROO del plan.';
+            }
+        }
+        if ($ccHint !== '') {
+            $ccKey = mb_strtoupper($ccHint);
+            $ccRow = $ccByCode[$ccKey] ?? null;
+            if (!$ccRow) {
+                $ccRow = $ccByName[mb_strtolower($ccHint)] ?? null;
+            }
+            if ($ccRow) {
+                $proposal['centro_costo_id'] = (int) $ccRow['id'];
+                $proposal['centro_codigo'] = $ccRow['codigo'];
+                $inf = grooflow_mgr_infer_from_cc_code($pdo, (string) $ccRow['codigo']);
+                if (empty($proposal['pnl_codigo']) && !empty($inf['pnl_codigo'])) {
+                    $proposal['pnl_codigo'] = $inf['pnl_codigo'];
+                }
+                if (empty($proposal['area_id']) && !empty($inf['area_id'])) {
+                    $proposal['area_id'] = $inf['area_id'];
+                    $proposal['area_codigo'] = $inf['area_codigo'] ?? null;
+                }
+                if (($proposal['tipo_costo'] ?? 'NA') === 'NA' && !empty($inf['tipo_costo'])) {
+                    $proposal['tipo_costo'] = $inf['tipo_costo'];
+                }
+                if (($proposal['confianza'] ?? 'baja') !== 'alta') {
+                    $proposal['confianza'] = 'alta';
+                }
+                $proposal['fuente'] = ($proposal['fuente'] ?? 'starsoft_cc');
+                $proposal['notas'][] = 'Centro desde metadato Starsoft CENTRO DE COSTO.';
+            }
+        }
+
+        // Prefijos de clase contable si aún no hay naturaleza
+        if (empty($proposal['naturaleza_codigo'])) {
+            if (str_starts_with($code, '70') || str_starts_with($code, '75')) {
+                $proposal['naturaleza_codigo'] = 'N01';
+                $proposal['pnl_codigo'] = $proposal['pnl_codigo'] ?: '01';
+                $proposal['confianza'] = $proposal['confianza'] === 'baja' ? 'media' : $proposal['confianza'];
+            } elseif (str_starts_with($code, '62')) {
+                $proposal['naturaleza_codigo'] = 'N02';
+                $proposal['confianza'] = 'alta';
+            } elseif (str_starts_with($code, '63') || str_starts_with($code, '65') || str_starts_with($code, '68')) {
+                $proposal['naturaleza_codigo'] = $proposal['naturaleza_codigo'] ?: 'N11';
+            }
+        }
+
+        $confRank = $rank[(string) ($proposal['confianza'] ?? 'baja')] ?? 1;
+        $usable = $confRank >= $minRank && (!empty($proposal['naturaleza_codigo']) || !empty($proposal['pnl_codigo']) || !empty($proposal['centro_costo_id']));
+        $item = [
+            'cuenta_codigo' => $code,
+            'cuenta_nombre' => $name,
+            'proposal' => $proposal,
+            'usable' => $usable,
+            'applied' => false,
+            'skipped_existing' => false,
+        ];
+
+        if ($usable && $apply) {
+            $payload = [
+                'cuenta_codigo' => $code,
+                'cuenta_nombre' => $name,
+                'naturaleza_codigo' => $proposal['naturaleza_codigo'] ?? null,
+                'pnl_codigo' => $proposal['pnl_codigo'] ?? null,
+                'area_id' => $proposal['area_id'] ?? null,
+                'subarea_id' => $proposal['subarea_id'] ?? null,
+                'centro_costo_id' => $proposal['centro_costo_id'] ?? null,
+                'tipo_costo' => $proposal['tipo_costo'] ?? 'NA',
+                'driver_id' => $proposal['driver_id'] ?? null,
+                'estado' => 'activo',
+                'prioridad' => 50,
+                'notas' => 'Auto-map desde plan Starsoft (' . ($proposal['fuente'] ?? 'classify') . ')',
+                'created_by' => $createdBy,
+                'motivo' => 'auto_map_from_chart',
+            ];
+            $id = null;
+            if ($hasExisting && $overwrite) {
+                $id = (int) $existing[$code]['id'];
+            }
+            $saved = grooflow_mgr_mapping_save($pdo, $payload, $id);
+            $existing[$code] = $saved;
+            $item['applied'] = true;
+            $item['mapping_id'] = $saved['id'] ?? null;
+            $applied++;
+        }
+
+        $proposals[] = $item;
+    }
+
+    return [
+        'reviewed' => $reviewed,
+        'proposed' => count($proposals),
+        'usable' => count(array_filter($proposals, static fn ($p) => !empty($p['usable']))),
+        'applied' => $applied,
+        'skipped_existing' => $skipped,
+        'items' => $proposals,
+        'apply' => $apply,
+    ];
+}
+
+/**
+ * Ingesta un gasto operativo (caja, factura, honorarios, etc.) hacia gastos_cc + classify.
+ * Idempotente por origen_tipo + origen_id.
+ *
+ * @param array<string,mixed> $data
+ * @return array<string,mixed>
+ */
+function grooflow_mgr_ingest_expense(PDO $pdo, array $data): array
+{
+    grooflow_mgr_pnl_ensure_schema($pdo);
+    require_once __DIR__ . '/grooflow_cost_centers_ops.php';
+
+    $fecha = trim((string) ($data['fecha'] ?? ''));
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $fecha)) {
+        // Aceptar ISO datetime
+        if (preg_match('/^(\d{4}-\d{2}-\d{2})/', $fecha, $m)) {
+            $fecha = $m[1];
+        } else {
+            $fecha = date('Y-m-d');
+        }
+    }
+    $monto = round((float) ($data['monto'] ?? 0), 2);
+    if ($monto <= 0) {
+        throw new InvalidArgumentException('monto debe ser > 0');
+    }
+    $concepto = trim((string) ($data['concepto'] ?? $data['description'] ?? ''));
+    if ($concepto === '') {
+        $concepto = 'Gasto operativo';
+    }
+    $cuenta = preg_replace('/\D+/', '', (string) ($data['cuenta_codigo'] ?? $data['accountingAccount'] ?? '')) ?: '';
+    $origenTipo = (string) ($data['origen_tipo'] ?? 'manual');
+    $allowedOrigen = ['manual', 'caja', 'transaccion', 'factura', 'personal'];
+    if (!in_array($origenTipo, $allowedOrigen, true)) {
+        $origenTipo = 'manual';
+    }
+    $origenId = trim((string) ($data['origen_id'] ?? '')) ?: null;
+    $sede = trim((string) ($data['sede_nombre'] ?? $data['location'] ?? '')) ?: null;
+    $colab = trim((string) ($data['colaborador_id'] ?? '')) ?: null;
+    $autoDist = array_key_exists('auto_distribute', $data) ? !empty($data['auto_distribute']) : true;
+    $createdBy = trim((string) ($data['created_by'] ?? '')) ?: null;
+
+    if ($origenId !== null) {
+        $dup = $pdo->prepare('SELECT id FROM grooflow_gastos_cc WHERE origen_tipo=? AND origen_id=? AND is_deleted=0 LIMIT 1');
+        $dup->execute([$origenTipo, $origenId]);
+        $dupId = $dup->fetchColumn();
+        if ($dupId !== false) {
+            $existing = grooflow_gastos_cc_get($pdo, (int) $dupId);
+            return [
+                'ok' => true,
+                'duplicated' => true,
+                'gasto' => $existing,
+                'proposal' => null,
+                'distributed' => $existing && (string) ($existing['estado'] ?? '') === 'distribuido',
+            ];
+        }
+    }
+
+    $proposal = grooflow_mgr_classify_propose($pdo, [
+        'cuenta_codigo' => $cuenta,
+        'texto' => $concepto,
+        'cuenta_nombre' => $concepto,
+        'fecha' => $fecha,
+        'colaborador_id' => $colab ?? '',
+    ]);
+
+    $tipo = 'SIN_ASIGNAR';
+    $ccOrigen = null;
+    $reglaId = null;
+    if ($colab) {
+        $tipo = 'PERSONAL';
+    } elseif (!empty($proposal['centro_costo_id'])) {
+        $tipo = 'DIRECTO';
+        $ccOrigen = (int) $proposal['centro_costo_id'];
+    } elseif (!empty($data['centro_costo_origen_id'])) {
+        $tipo = 'DIRECTO';
+        $ccOrigen = (int) $data['centro_costo_origen_id'];
+    } elseif (!empty($data['regla_id'])) {
+        $tipo = 'REGLA';
+        $reglaId = (int) $data['regla_id'];
+    }
+
+    $gasto = grooflow_gastos_cc_save($pdo, [
+        'fecha' => $fecha,
+        'monto' => $monto,
+        'concepto' => $concepto,
+        'cuenta_codigo' => $cuenta !== '' ? $cuenta : null,
+        'sede_nombre' => $sede,
+        'origen_tipo' => $origenTipo,
+        'origen_id' => $origenId,
+        'tipo_asignacion' => $tipo,
+        'centro_costo_origen_id' => $ccOrigen,
+        'regla_id' => $reglaId,
+        'colaborador_id' => $colab,
+        'notas' => trim((string) ($data['notas'] ?? '')) ?: ('Ingest ' . $origenTipo . ' · conf=' . ($proposal['confianza'] ?? '')),
+        'created_by' => $createdBy,
+        'moneda' => trim((string) ($data['moneda'] ?? 'PEN')) ?: 'PEN',
+    ], null);
+
+    $distributed = false;
+    $distError = null;
+    if ($autoDist && $tipo !== 'SIN_ASIGNAR') {
+        try {
+            $gasto = grooflow_gasto_distribute($pdo, (int) $gasto['id'], $createdBy);
+            $distributed = true;
+        } catch (Throwable $e) {
+            $distError = $e->getMessage();
+        }
+    }
+
+    return [
+        'ok' => true,
+        'duplicated' => false,
+        'gasto' => $gasto,
+        'proposal' => $proposal,
+        'distributed' => $distributed,
+        'dist_error' => $distError,
     ];
 }
 
