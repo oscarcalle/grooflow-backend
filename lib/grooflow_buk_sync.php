@@ -6,8 +6,8 @@ declare(strict_types=1);
  * Sincroniza ficha laboral Buk.pe → app_usuarios.
  *
  * Fuente principal: grooflow_buk_empleados (maestro sync desde Buk.pe /employees).
- * Turno operativo: columnas de turno ya enriquecidas desde Ctrlit en RRHH;
- * si faltan, se rellenan opcionalmente desde getAsignacionTurnos (Asistencia).
+ * Turno operativo: columnas de turno enriquecidas desde Ctrlit (getAsignacionTurnos).
+ * La API aplica/actualiza turno en ficha; la edición manual vive en Asistencia (override).
  *
  * Matching: linked_usuario_id → DNI → email (solo si DNI ausente). No crea usuarios.
  */
@@ -512,7 +512,7 @@ function grooflow_buk_sync_usuarios(PDO $pdo, array $options = []): array
     $updated = (int) ($fromEmpleados['updated'] ?? 0);
     $skipped = (int) ($fromEmpleados['skipped'] ?? 0);
 
-    // Complemento opcional: rellenar turnos vacíos desde Ctrlit (Asistencia).
+    // Turnos Ctrlit: aplica lo que venga de getAsignacionTurnos (no bloquea si ya hay valor).
     $turnosFilled = 0;
     $includeTurnos = ($options['includeTurnos'] ?? true) !== false;
     if ($includeTurnos) {
@@ -525,7 +525,7 @@ function grooflow_buk_sync_usuarios(PDO $pdo, array $options = []): array
                 $apiRoot = grooflow_buk_api_root_from_base($asistBase);
                 $turnos = grooflow_buk_fetch_turnos_all($apiRoot, $asistToken);
                 $bySource['turnos'] = count($turnos);
-                $turnosFilled = grooflow_buk_fill_empty_turnos_from_ctrlit($pdo, $turnos, $syncedAt);
+                $turnosFilled = grooflow_buk_apply_turnos_from_ctrlit($pdo, $turnos, $syncedAt);
                 $updated += $turnosFilled;
             }
         } catch (Throwable $e) {
@@ -550,7 +550,7 @@ function grooflow_buk_sync_usuarios(PDO $pdo, array $options = []): array
         (int) ($fromEmpleados['by_dni'] ?? 0),
         (int) ($fromEmpleados['by_email'] ?? 0),
         $bySource['turnos'] > 0
-            ? sprintf('; turnos Ctrlit %d (rellenos %d)', $bySource['turnos'], $turnosFilled)
+            ? sprintf('; turnos Ctrlit %d (aplicados %d)', $bySource['turnos'], $turnosFilled)
             : ''
     );
 
@@ -586,11 +586,12 @@ function grooflow_buk_sync_usuarios(PDO $pdo, array $options = []): array
 }
 
 /**
- * Rellena turno vacío en app_usuarios desde asignación de turnos Ctrlit (por DNI).
+ * Aplica turno desde getAsignacionTurnos Ctrlit a app_usuarios (por DNI).
+ * Sobrescribe con lo que venga de la API (no bloquea valores previos).
  *
  * @param list<array<string, mixed>> $turnosRows
  */
-function grooflow_buk_fill_empty_turnos_from_ctrlit(PDO $pdo, array $turnosRows, string $syncedAt): int
+function grooflow_buk_apply_turnos_from_ctrlit(PDO $pdo, array $turnosRows, string $syncedAt): int
 {
     if ($turnosRows === []) {
         return 0;
@@ -629,16 +630,26 @@ function grooflow_buk_fill_empty_turnos_from_ctrlit(PDO $pdo, array $turnosRows,
             continue;
         }
         $staff = $byDni[$dni];
-        $needsTurno = trim((string) ($user['turno'] ?? '')) === '' && trim((string) ($staff['turno'] ?? '')) !== '';
-        $needsHorario = trim((string) ($user['turno_horario'] ?? '')) === '' && trim((string) ($staff['turno_horario'] ?? '')) !== '';
-        $needsCodigo = trim((string) ($user['turno_codigo'] ?? '')) === '' && trim((string) ($staff['turno_codigo'] ?? '')) !== '';
-        if (! $needsTurno && ! $needsHorario && ! $needsCodigo) {
+        $nuevoTurno = trim((string) ($staff['turno'] ?? ''));
+        $nuevoHorario = trim((string) ($staff['turno_horario'] ?? ''));
+        $nuevoCodigo = trim((string) ($staff['turno_codigo'] ?? ''));
+        if ($nuevoTurno === '' && $nuevoHorario === '' && $nuevoCodigo === '') {
+            continue;
+        }
+        $curTurno = trim((string) ($user['turno'] ?? ''));
+        $curHorario = trim((string) ($user['turno_horario'] ?? ''));
+        $curCodigo = trim((string) ($user['turno_codigo'] ?? ''));
+        $changed =
+            ($nuevoTurno !== '' && $nuevoTurno !== $curTurno)
+            || ($nuevoHorario !== '' && $nuevoHorario !== $curHorario)
+            || ($nuevoCodigo !== '' && $nuevoCodigo !== $curCodigo);
+        if (! $changed) {
             continue;
         }
         $upd->execute([
-            $needsTurno ? (string) $staff['turno'] : '',
-            $needsHorario ? (string) $staff['turno_horario'] : '',
-            $needsCodigo ? (string) $staff['turno_codigo'] : '',
+            $nuevoTurno,
+            $nuevoHorario,
+            $nuevoCodigo,
             $syncedAt,
             $id,
         ]);
@@ -648,6 +659,12 @@ function grooflow_buk_fill_empty_turnos_from_ctrlit(PDO $pdo, array $turnosRows,
     }
 
     return $filled;
+}
+
+/** @deprecated Usar grooflow_buk_apply_turnos_from_ctrlit */
+function grooflow_buk_fill_empty_turnos_from_ctrlit(PDO $pdo, array $turnosRows, string $syncedAt): int
+{
+    return grooflow_buk_apply_turnos_from_ctrlit($pdo, $turnosRows, $syncedAt);
 }
 
 /**

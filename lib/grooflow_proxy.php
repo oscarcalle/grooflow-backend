@@ -772,6 +772,41 @@ function grooflow_handle_buk(PDO $pdo, string $action, array $data): array
         ];
     }
 
+    if ($action === 'fetch-turnos') {
+        $apiRoot = grooflow_ctrlit_api_root($baseUrl);
+        $url = rtrim($apiRoot, '/') . '/getAsignacionTurnos';
+        $fetchUrl = $url . (str_contains($url, '?') ? '&' : '?') . 'token=' . rawurlencode($apiToken);
+        grooflow_assert_buk_url($fetchUrl);
+        $res = grooflow_proxy_fetch($fetchUrl, [
+            'token: ' . $apiToken,
+            'Accept: application/json',
+        ], 120);
+        $json = json_decode($res['body'], true);
+        $records = grooflow_buk_extract_records($json);
+        if ($records === [] && is_array($json) && array_is_list($json)) {
+            $records = $json;
+        }
+        $duration = (int) round(microtime(true) * 1000) - $started;
+        $ok = $res['status'] >= 200 && $res['status'] < 300;
+
+        return [
+            'ok' => $ok,
+            'status' => $res['status'],
+            'message' => $ok
+                ? ('Turnos OK. ' . count($records) . ' asignación(es).')
+                : ('HTTP ' . $res['status'] . ' — URL: ' . $url),
+            'records' => $ok ? $records : [],
+            'data' => $ok ? $records : [],
+            'recordCount' => count($records),
+            'triedUrl' => $url,
+            'durationMs' => $duration,
+        ];
+    }
+
+    if ($action !== 'fetch-all') {
+        throw new InvalidArgumentException('Acción Buk no soportada: ' . $action);
+    }
+
     // fetch-all: semana incremental + dispositivo huellero (obtenerRegistroAsistencia)
     try {
         $all = grooflow_buk_fetch_asistencia_with_dispositivos(

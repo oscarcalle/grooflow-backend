@@ -388,8 +388,8 @@ function grooflow_dispatch(PDO $pdo): void
         return;
     }
 
-    if (preg_match('#^/proxy/buk/(test|fetch|fetch-all|probe|sync-usuarios)$#', $path, $m) && $method === 'POST') {
-        if ($m[1] === 'test' || $m[1] === 'probe' || $m[1] === 'sync-usuarios') {
+    if (preg_match('#^/proxy/buk/(test|fetch|fetch-all|fetch-turnos|probe|sync-usuarios)$#', $path, $m) && $method === 'POST') {
+        if ($m[1] === 'test' || $m[1] === 'probe' || $m[1] === 'sync-usuarios' || $m[1] === 'fetch-turnos') {
             grooflow_assert_admin($pdo);
         }
         if ($m[1] === 'sync-usuarios') {
