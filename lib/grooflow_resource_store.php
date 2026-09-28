@@ -102,7 +102,7 @@ function grooflow_write_resource(PDO $pdo, string $key, mixed $incoming, ?string
     }
     grooflow_ensure_schema($pdo);
 
-    return grooflow_atomic($pdo, function () use ($pdo, $key, $incoming, $revision) {
+    $result = grooflow_atomic($pdo, function () use ($pdo, $key, $incoming, $revision) {
         $ctx = grooflow_access_context($pdo);
         $full = grooflow_kv_get($pdo, $key);
         $visible = grooflow_project_resource($ctx, $key, $full);
@@ -149,6 +149,12 @@ function grooflow_write_resource(PDO $pdo, string $key, mixed $incoming, ?string
 
         return ['ok' => true, 'revision' => grooflow_revision($saved)];
     });
+
+    if (function_exists('grooflow_mgr_sync_after_write')) {
+        grooflow_mgr_sync_after_write($pdo, $key);
+    }
+
+    return $result;
 }
 
 function grooflow_assert_open_months(PDO $pdo, array $before, array $after): void

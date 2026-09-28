@@ -745,6 +745,27 @@ function grooflow_mgr_infer_from_cc_code(PDO $pdo, string $ccCode): array
         'CC-LOGISTICA' => ['pnl_codigo' => '04.04', 'area_codigo' => 'LOG', 'tipo_costo' => 'INDIRECTO'],
     ];
     $out = $map[$ccCode] ?? [];
+    if ($out === [] && preg_match('/^([A-Z]+)-[A-Z]+$/', $ccCode, $mm)) {
+        // Centros por sede (MAN-BEN, CTR-SAN…) y corporativos (RRHH-CEN…) por prefijo
+        $byPrefix = [
+            'MED' => ['pnl_codigo' => '02.01', 'area_codigo' => 'MED', 'tipo_costo' => 'DIRECTO'],
+            'PEL' => ['pnl_codigo' => '02.02', 'area_codigo' => 'PEL', 'tipo_costo' => 'DIRECTO'],
+            'PET' => ['pnl_codigo' => '02.03', 'area_codigo' => 'PET', 'tipo_costo' => 'DIRECTO'],
+            'MOV' => ['pnl_codigo' => '02.04', 'area_codigo' => 'MOV', 'tipo_costo' => 'DIRECTO'],
+            'CTR' => ['pnl_codigo' => '04.02', 'area_codigo' => 'ATC', 'tipo_costo' => 'INDIRECTO'],
+            'MKT' => ['pnl_codigo' => '04.01', 'area_codigo' => 'MKT', 'tipo_costo' => 'INDIRECTO'],
+            'GER' => ['pnl_codigo' => '05.01', 'area_codigo' => 'GER', 'tipo_costo' => 'INDIRECTO'],
+            'AUD' => ['pnl_codigo' => '05.02', 'area_codigo' => 'AUD', 'tipo_costo' => 'INDIRECTO'],
+            'CON' => ['pnl_codigo' => '05.03', 'area_codigo' => 'CON', 'tipo_costo' => 'INDIRECTO'],
+            'ADM' => ['pnl_codigo' => '05.03', 'area_codigo' => 'ADF', 'tipo_costo' => 'INDIRECTO'],
+            'RRHH' => ['pnl_codigo' => '05.04', 'area_codigo' => 'RRHH', 'tipo_costo' => 'INDIRECTO'],
+            'COM' => ['pnl_codigo' => '05.05', 'area_codigo' => 'COM', 'tipo_costo' => 'INDIRECTO'],
+            'MAN' => ['pnl_codigo' => '05.07', 'area_codigo' => 'MAN', 'tipo_costo' => 'INDIRECTO'],
+            'LIM' => ['pnl_codigo' => '05.07', 'area_codigo' => 'LIM', 'tipo_costo' => 'INDIRECTO'],
+            'GEN' => ['pnl_codigo' => '05.07', 'area_codigo' => 'SSE', 'tipo_costo' => 'INDIRECTO'],
+        ];
+        $out = $byPrefix[$mm[1]] ?? [];
+    }
     if (!empty($out['area_codigo'])) {
         $st = $pdo->prepare('SELECT id FROM grooflow_org_areas WHERE codigo=? AND is_deleted=0 LIMIT 1');
         $st->execute([$out['area_codigo']]);
@@ -1349,17 +1370,34 @@ function grooflow_mgr_ingest_expense(PDO $pdo, array $data): array
         'colaborador_id' => $colab ?? '',
     ]);
 
+    // Prioridad del centro: colaborador → centro explícito → área+sede del gasto → mapping/keyword → generales de sede
+    $area = trim((string) ($data['area'] ?? ''));
+    $byArea = function_exists('grooflow_mgr_resolve_cc_by_area')
+        ? grooflow_mgr_resolve_cc_by_area($pdo, $area, $sede)
+        : null;
     $tipo = 'SIN_ASIGNAR';
     $ccOrigen = null;
     $reglaId = null;
     if ($colab) {
         $tipo = 'PERSONAL';
-    } elseif (!empty($proposal['centro_costo_id'])) {
-        $tipo = 'DIRECTO';
-        $ccOrigen = (int) $proposal['centro_costo_id'];
     } elseif (!empty($data['centro_costo_origen_id'])) {
         $tipo = 'DIRECTO';
         $ccOrigen = (int) $data['centro_costo_origen_id'];
+    } elseif ($byArea && $byArea['via'] !== 'generales_sede') {
+        $tipo = 'DIRECTO';
+        $ccOrigen = $byArea['id'];
+        $proposal['centro_costo_id'] = $byArea['id'];
+        $proposal['centro_codigo'] = $byArea['codigo'];
+        $proposal['notas'][] = 'Centro por área + sede (' . $byArea['via'] . ').';
+    } elseif (!empty($proposal['centro_costo_id'])) {
+        $tipo = 'DIRECTO';
+        $ccOrigen = (int) $proposal['centro_costo_id'];
+    } elseif ($byArea) {
+        $tipo = 'DIRECTO';
+        $ccOrigen = $byArea['id'];
+        $proposal['centro_costo_id'] = $byArea['id'];
+        $proposal['centro_codigo'] = $byArea['codigo'];
+        $proposal['notas'][] = 'Centro por defecto: gastos generales de sede.';
     } elseif (!empty($data['regla_id'])) {
         $tipo = 'REGLA';
         $reglaId = (int) $data['regla_id'];

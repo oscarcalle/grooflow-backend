@@ -23,6 +23,7 @@ require_once dirname(__DIR__) . '/lib/grooflow_usuario_menu.php';
 require_once dirname(__DIR__) . '/lib/grooflow_rrhh.php';
 require_once dirname(__DIR__) . '/lib/grooflow_cost_centers.php';
 require_once dirname(__DIR__) . '/lib/grooflow_mgr_pnl.php';
+require_once dirname(__DIR__) . '/lib/grooflow_mgr_sync.php';
 require_once dirname(__DIR__) . '/lib/grooflow_lists.php';
 require_once dirname(__DIR__) . '/lib/grooflow_pipelines.php';
 
@@ -220,6 +221,13 @@ function grooflow_dispatch(PDO $pdo): void
     }
     if (str_starts_with($path, '/cost-centers')) {
         grooflow_assert_module($pdo, ['Centros de Costos', 'Contabilidad', 'Caja Chica']);
+    }
+    if (str_starts_with($path, '/mgr-pnl')) {
+        $mgrModules = ['P&L Gerencial', 'Contabilidad', 'Centros de Costos'];
+        if ($path === '/mgr-pnl/ingest-expense' || $path === '/mgr-pnl/classify') {
+            $mgrModules = array_merge($mgrModules, ['Caja Chica', 'Transacciones', 'Compras', 'Honorarios']);
+        }
+        grooflow_assert_module($pdo, $mgrModules);
     }
 
     if ($path === '/bootstrap' && $method === 'GET') {
@@ -1270,6 +1278,10 @@ function grooflow_dispatch(PDO $pdo): void
         } catch (InvalidArgumentException $e) {
             api_json_response(['ok' => false, 'error' => $e->getMessage()], 400);
         }
+        return;
+    }
+    if ($path === '/mgr-pnl/sync-sources' && $method === 'POST') {
+        api_json_response(['ok' => true, 'sync' => grooflow_mgr_sync_all($pdo)]);
         return;
     }
     if ($path === '/mgr-pnl/ingest-expense' && $method === 'POST') {
