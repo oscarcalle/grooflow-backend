@@ -185,14 +185,22 @@ function grooflow_mgr_area_map_catalog(PDO $pdo): array
         }
     }
 
+    $baseFor = static function (string $target) use ($bases): ?string {
+        foreach ($bases as $bn => $label) {
+            if ($bn === $target || str_starts_with($bn, $target) || str_starts_with($target, $bn)) {
+                return $label;
+            }
+        }
+
+        return null;
+    };
     $items = [];
     foreach ($areas as $norm => $label) {
         $cfg = $map[$norm] ?? null;
+        $base = $baseFor(GROOFLOW_MGR_AREA_ALIASES[$norm] ?? $norm);
         $auto = isset(GROOFLOW_MGR_AREA_CORPORATE[$norm])
             ? 'Fijo: ' . GROOFLOW_MGR_AREA_CORPORATE[$norm]
-            : (isset(GROOFLOW_MGR_AREA_ALIASES[$norm]) || isset($bases[$norm])
-                ? 'Por sede: ' . ($bases[GROOFLOW_MGR_AREA_ALIASES[$norm] ?? $norm] ?? (GROOFLOW_MGR_AREA_ALIASES[$norm] ?? $norm))
-                : 'Gastos generales de sede');
+            : ($base !== null ? 'Por sede: ' . $base : 'Gastos generales de sede');
         $items[] = [
             'area' => $label,
             'destino' => $cfg['destino'] ?? 'auto',
