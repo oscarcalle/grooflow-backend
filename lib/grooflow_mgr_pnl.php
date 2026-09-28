@@ -319,7 +319,8 @@ function grooflow_mgr_pnl_seed(PDO $pdo): void
             ['limpieza', 'N12', '05.07', 'LIM', 'CC-LIMPIEZA', 'INDIRECTO', 10],
             ['alquiler', 'N07', '05.07', 'SSE', 'CC-SERVICIOS-SEDE', 'INDIRECTO', 10],
             ['electricidad', 'N07', '05.07', 'SSE', 'CC-SERVICIOS-SEDE', 'INDIRECTO', 10],
-            ['agua', 'N07', '05.07', 'SSE', 'CC-SERVICIOS-SEDE', 'INDIRECTO', 10],
+            ['sedapal', 'N07', '05.07', 'SSE', 'CC-SERVICIOS-SEDE', 'INDIRECTO', 10],
+            ['servicio de agua', 'N07', '05.07', 'SSE', 'CC-SERVICIOS-SEDE', 'INDIRECTO', 10],
             ['internet', 'N07', '05.07', 'SSE', 'CC-SERVICIOS-SEDE', 'INDIRECTO', 10],
             // Financiero
             ['interes', 'N13', '07', 'FIN', 'CC-FINANZAS', 'INDIRECTO', 10],
@@ -338,6 +339,19 @@ function grooflow_mgr_pnl_seed(PDO $pdo): void
             $ins->execute($r);
         }
     }
+
+    // "agua" como subcadena clasificaba agua de mesa para el personal como servicio básico
+    $pdo->exec("
+        UPDATE grooflow_mgr_keyword_rules SET keyword='sedapal'
+        WHERE keyword='agua' AND centro_codigo='CC-SERVICIOS-SEDE' AND is_deleted=0
+    ");
+    $pdo->exec("
+        INSERT INTO grooflow_mgr_keyword_rules
+            (keyword, naturaleza_codigo, pnl_codigo, area_codigo, centro_codigo, tipo_costo, prioridad)
+        SELECT 'servicio de agua','N07','05.07','SSE','CC-SERVICIOS-SEDE','INDIRECTO',10 FROM DUAL
+        WHERE EXISTS (SELECT 1 FROM grooflow_mgr_keyword_rules WHERE keyword='sedapal' AND is_deleted=0)
+          AND NOT EXISTS (SELECT 1 FROM grooflow_mgr_keyword_rules WHERE keyword='servicio de agua' AND is_deleted=0)
+    ");
 }
 
 /**

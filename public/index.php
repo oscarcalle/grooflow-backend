@@ -1280,6 +1280,23 @@ function grooflow_dispatch(PDO $pdo): void
         }
         return;
     }
+    if ($path === '/mgr-pnl/area-map' && $method === 'GET') {
+        api_json_response(['ok' => true, ...grooflow_mgr_area_map_catalog($pdo)]);
+        return;
+    }
+    if ($path === '/mgr-pnl/area-map' && $method === 'PUT') {
+        $data = api_request_json();
+        $items = is_array($data['items'] ?? null) ? $data['items'] : [];
+        try {
+            $saved = grooflow_mgr_area_map_save($pdo, $items, (string) (api_current_user()['id'] ?? ''));
+        } catch (InvalidArgumentException $e) {
+            api_json_response(['ok' => false, 'error' => $e->getMessage()], 400);
+            return;
+        }
+        $areas = array_map(static fn ($it) => (string) ($it['area'] ?? ''), $items);
+        api_json_response(['ok' => true, 'saved' => $saved, 'sync' => grooflow_mgr_sync_all($pdo, null, $areas)]);
+        return;
+    }
     if ($path === '/mgr-pnl/sync-sources' && $method === 'POST') {
         api_json_response(['ok' => true, 'sync' => grooflow_mgr_sync_all($pdo)]);
         return;
