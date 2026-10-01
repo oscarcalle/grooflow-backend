@@ -141,6 +141,21 @@ function grooflow_rrhh_sync_if_due(PDO $pdo, array $options = []): array
 }
 
 /**
+ * Relee settings:asistencia y solo parchea campos de estado en buk:
+ * la descarga Ctrlit puede tardar minutos y no debe pisar fichas guardadas mientras tanto.
+ *
+ * @param array<string, mixed> $bukPatch
+ */
+function grooflow_asistencia_patch_buk_status(PDO $pdo, array $bukPatch): void
+{
+    $fresh = grooflow_asistencia_get_settings($pdo);
+    $fresh = is_array($fresh) ? $fresh : [];
+    $buk = is_array($fresh['buk'] ?? null) ? $fresh['buk'] : [];
+    $fresh['buk'] = array_merge($buk, $bukPatch);
+    grooflow_asistencia_set_settings($pdo, $fresh);
+}
+
+/**
  * Marcaciones Buk Asistencia (Ctrlit) → historial MySQL.
  *
  * @param array{force?:bool,maxPages?:int} $options
@@ -191,16 +206,18 @@ function grooflow_asistencia_marcaciones_pipeline_if_due(PDO $pdo, array $option
         $records = grooflow_buk_fetch_asistencia_with_dispositivos($base, $token, $maxPages);
         $upsert = grooflow_asistencia_buk_records_upsert($pdo, $records);
         $at = date('c');
-        $buk['lastMarcacionesPipelineAt'] = $at;
-        $buk['lastMarcacionesPipelineOk'] = true;
-        $buk['lastMarcacionesPipelineMessage'] = sprintf(
-            'Marcaciones: %d registros upsert (%d ms)',
-            (int) ($upsert['upserted'] ?? 0),
-            (int) round(microtime(true) * 1000) - $started
-        );
-        $buk['lastMarcacionesPipelineCount'] = (int) ($upsert['upserted'] ?? 0);
-        $settings['buk'] = $buk;
-        grooflow_asistencia_set_settings($pdo, $settings);
+        $status = [
+            'lastMarcacionesPipelineAt' => $at,
+            'lastMarcacionesPipelineOk' => true,
+            'lastMarcacionesPipelineMessage' => sprintf(
+                'Marcaciones: %d registros upsert (%d ms)',
+                (int) ($upsert['upserted'] ?? 0),
+                (int) round(microtime(true) * 1000) - $started
+            ),
+            'lastMarcacionesPipelineCount' => (int) ($upsert['upserted'] ?? 0),
+        ];
+        $buk = array_merge($buk, $status);
+        grooflow_asistencia_patch_buk_status($pdo, $status);
 
         return [
             'ran' => true,
@@ -215,12 +232,12 @@ function grooflow_asistencia_marcaciones_pipeline_if_due(PDO $pdo, array $option
             ],
         ];
     } catch (Throwable $e) {
-        $buk['lastMarcacionesPipelineAt'] = date('c');
-        $buk['lastMarcacionesPipelineOk'] = false;
-        $buk['lastMarcacionesPipelineMessage'] = $e->getMessage();
-        $settings['buk'] = $buk;
         try {
-            grooflow_asistencia_set_settings($pdo, $settings);
+            grooflow_asistencia_patch_buk_status($pdo, [
+                'lastMarcacionesPipelineAt' => date('c'),
+                'lastMarcacionesPipelineOk' => false,
+                'lastMarcacionesPipelineMessage' => $e->getMessage(),
+            ]);
         } catch (Throwable) {
         }
 
