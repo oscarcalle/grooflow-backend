@@ -33,6 +33,8 @@ function grooflow_hr_list_colaboradores(PDO $pdo): array
             start_date,
             active_since,
             sede,
+            supervisor,
+            turno_horario,
             linked_usuario_id,
             payload
         FROM grooflow_buk_empleados
@@ -143,6 +145,8 @@ function grooflow_hr_list_colaboradores(PDO $pdo): array
             'startDate' => $start !== '' ? $start : null,
             'sede' => trim((string) ($r['sede'] ?? '')) ?: null,
             'costCenter' => $costCenter !== '' ? $costCenter : null,
+            'supervisor' => trim((string) ($r['supervisor'] ?? ($normalized['supervisor'] ?? ''))) ?: null,
+            'shiftHours' => trim((string) ($r['turno_horario'] ?? ($normalized['turnoHorario'] ?? ''))) ?: null,
             'linkedUsuarioId' => isset($r['linked_usuario_id']) && $r['linked_usuario_id'] !== null && $r['linked_usuario_id'] !== ''
                 ? (string) $r['linked_usuario_id']
                 : null,
