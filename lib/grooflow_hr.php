@@ -44,6 +44,18 @@ function grooflow_hr_list_colaboradores(PDO $pdo): array
         LIMIT 5000
     ";
     $rows = $pdo->query($sql)->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+    // Jefe inmediato: la columna `supervisor` solo existe si Asistencia enriqueció la ficha;
+    // Buk siempre trae bossDocument, que se resuelve contra la propia tabla.
+    $namesByDoc = [];
+    foreach ($pdo->query('SELECT document_number, full_name FROM grooflow_buk_empleados WHERE document_number IS NOT NULL') ?: [] as $d) {
+        $key = preg_replace('/\D+/', '', (string) ($d['document_number'] ?? '')) ?? '';
+        $name = trim((string) ($d['full_name'] ?? ''));
+        if ($key !== '' && $name !== '') {
+            $namesByDoc[$key] = $name;
+        }
+    }
+
     $out = [];
     foreach ($rows as $r) {
         $full = trim((string) ($r['full_name'] ?? ''));
@@ -123,6 +135,12 @@ function grooflow_hr_list_colaboradores(PDO $pdo): array
             $start = substr($start, 0, 10);
         }
 
+        $supervisor = trim((string) ($r['supervisor'] ?? ($normalized['supervisor'] ?? '')));
+        if ($supervisor === '' && ! empty($normalized['bossDocument'])) {
+            $bossKey = preg_replace('/\D+/', '', (string) $normalized['bossDocument']) ?? '';
+            $supervisor = $namesByDoc[$bossKey] ?? '';
+        }
+
         $costCenter = '';
         if (! function_exists('grooflow_rrhh_extract_cost_center_code')) {
             require_once __DIR__ . '/grooflow_rrhh.php';
@@ -145,7 +163,7 @@ function grooflow_hr_list_colaboradores(PDO $pdo): array
             'startDate' => $start !== '' ? $start : null,
             'sede' => trim((string) ($r['sede'] ?? '')) ?: null,
             'costCenter' => $costCenter !== '' ? $costCenter : null,
-            'supervisor' => trim((string) ($r['supervisor'] ?? ($normalized['supervisor'] ?? ''))) ?: null,
+            'supervisor' => $supervisor !== '' ? $supervisor : null,
             'shiftHours' => trim((string) ($r['turno_horario'] ?? ($normalized['turnoHorario'] ?? ''))) ?: null,
             'linkedUsuarioId' => isset($r['linked_usuario_id']) && $r['linked_usuario_id'] !== null && $r['linked_usuario_id'] !== ''
                 ? (string) $r['linked_usuario_id']
