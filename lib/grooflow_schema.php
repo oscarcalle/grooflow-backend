@@ -206,7 +206,7 @@ function grooflow_default_roles(): array
         'Contabilidad' => true, 'Gestión Vehicular' => true, 'Gestión de Inventario' => true,
         'Asistencia' => true, 'Turnos' => true, 'Accidentes de Trabajo' => true,
         'Entrega de Uniformes' => true, 'Reportes' => true, 'Auditoría' => true, 'Conciliación' => true,
-        'Usuarios' => true, 'Configuración' => true,
+        'Usuarios' => true, 'Configuración' => true, 'Cashback' => true,
     ];
 
     return [

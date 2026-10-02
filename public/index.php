@@ -229,6 +229,12 @@ function grooflow_dispatch(PDO $pdo): void
         }
         grooflow_assert_module($pdo, $mgrModules);
     }
+    if ($path === '/cashback' || str_starts_with($path, '/cashback/')) {
+        require_once dirname(__DIR__) . '/lib/grooflow_cashback.php';
+        grooflow_cashback_dispatch($pdo, $path, $method);
+
+        return;
+    }
 
     if ($path === '/bootstrap' && $method === 'GET') {
         $values = []; $revisions = [];

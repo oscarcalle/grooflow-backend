@@ -31,13 +31,13 @@ function grooflow_menu_actions_for_route(?string $route, ?string $moduloKey = nu
         'Proveedores', 'Productos', 'Compras', 'Gestión Vehicular', 'Gestión de Inventario',
         'Transacciones', 'Caja Chica', 'Honorarios', 'Marketing Eventos',
         'Accidentes de Trabajo', 'Entrega de Uniformes', 'Recursos Humanos',
-        'Asistencia', 'Turnos',
+        'Asistencia', 'Turnos', 'Cashback',
     ];
     if (in_array($mod, $crudModules, true)) {
         $actions = array_merge($actions, ['agregar', 'editar', 'eliminar']);
     }
 
-    if (in_array($mod, ['Accidentes de Trabajo', 'Entrega de Uniformes', 'Asistencia'], true)) {
+    if (in_array($mod, ['Accidentes de Trabajo', 'Entrega de Uniformes', 'Asistencia', 'Cashback'], true)) {
         $actions = array_merge($actions, ['exportar', 'configurar']);
     }
 
