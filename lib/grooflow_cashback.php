@@ -529,6 +529,10 @@ function grooflow_cashback_assert_unique(PDO $pdo, array $data, ?string $photoHa
     if ($stmt->fetch(PDO::FETCH_ASSOC)) {
         throw new GrooflowConflict("La factura {$data['serie']}-{$data['numero']} de este emisor ya fue registrada.");
     }
+    require_once __DIR__ . '/grooflow_receipts.php';
+    if (grooflow_receipt_petty_cash_match($pdo, $data['emisor_ruc'], $data['serie'], $data['numero']) !== null) {
+        throw new GrooflowConflict("La factura {$data['serie']}-{$data['numero']} ya fue rendida en Caja Chica (pagada con dinero de la empresa).");
+    }
     if ($photoHash !== null) {
         $stmt = $pdo->prepare('SELECT id FROM grooflow_cashback_facturas WHERE photo_hash = ? AND id <> ? LIMIT 1');
         $stmt->execute([$photoHash, $exceptId]);

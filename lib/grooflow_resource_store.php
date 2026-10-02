@@ -120,6 +120,8 @@ function grooflow_write_resource(PDO $pdo, string $key, mixed $incoming, ?string
             $beforeList = is_array($visible) && array_is_list($visible) ? $visible : [];
             $afterList = is_array($incoming) && array_is_list($incoming) ? $incoming : [];
             grooflow_assert_petty_cash_write($ctx, $beforeList, $afterList);
+            require_once __DIR__ . '/grooflow_receipts.php';
+            grooflow_receipt_assert_petty_cash_not_in_cashback($pdo, $beforeList, $afterList);
         }
         $global = in_array($key, [
             'data:treasuryBankBalance',

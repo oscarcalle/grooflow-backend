@@ -235,6 +235,12 @@ function grooflow_dispatch(PDO $pdo): void
 
         return;
     }
+    if (str_starts_with($path, '/receipts/')) {
+        require_once dirname(__DIR__) . '/lib/grooflow_receipts.php';
+        grooflow_receipts_dispatch($pdo, $path, $method);
+
+        return;
+    }
 
     if ($path === '/bootstrap' && $method === 'GET') {
         $values = []; $revisions = [];
