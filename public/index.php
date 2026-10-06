@@ -235,6 +235,12 @@ function grooflow_dispatch(PDO $pdo): void
 
         return;
     }
+    if ($path === '/telefonos' || str_starts_with($path, '/telefonos/')) {
+        require_once dirname(__DIR__) . '/lib/grooflow_telefonos.php';
+        grooflow_telefonos_dispatch($pdo, $path, $method);
+
+        return;
+    }
     if (str_starts_with($path, '/receipts/')) {
         require_once dirname(__DIR__) . '/lib/grooflow_receipts.php';
         grooflow_receipts_dispatch($pdo, $path, $method);
