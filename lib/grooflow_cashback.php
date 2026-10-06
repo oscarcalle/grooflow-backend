@@ -108,7 +108,88 @@ function grooflow_cashback_ensure_schema(PDO $pdo): void
             PRIMARY KEY (id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     ");
+    if (!$pdo->query("SHOW COLUMNS FROM grooflow_cashback_facturas LIKE 'cuenta_contable'")->fetch()) {
+        $pdo->exec('ALTER TABLE grooflow_cashback_facturas ADD COLUMN cuenta_contable VARCHAR(30) NULL AFTER centro_costo');
+    }
     $done = true;
+}
+
+function grooflow_cashback_config_key(string $value): string
+{
+    return strtr(mb_strtolower(trim($value)), ['á' => 'a', 'é' => 'e', 'í' => 'i', 'ó' => 'o', 'ú' => 'u', 'ü' => 'u', 'ñ' => 'n']);
+}
+
+/** Proveedor del catálogo (Proveedores) con ese RUC, o null. */
+function grooflow_cashback_provider_by_ruc(PDO $pdo, string $ruc): ?array
+{
+    $ruc = preg_replace('/\D/', '', $ruc) ?? '';
+    if ($ruc === '') {
+        return null;
+    }
+    require_once __DIR__ . '/grooflow_kv.php';
+    $providers = grooflow_kv_get($pdo, 'data:providers');
+    foreach (is_array($providers) ? $providers : [] as $p) {
+        if (is_array($p) && (preg_replace('/\D/', '', (string) ($p['ruc'] ?? '')) ?? '') === $ruc) {
+            return $p;
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Cuenta de gasto sugerida por el proveedor (misma configuración que Caja Chica):
+ * motivo cuya categoría coincide con la categoría de Cashback, cuenta general del proveedor
+ * o, si tiene un único motivo con cuenta, ese.
+ */
+function grooflow_cashback_suggest_account(array $provider, array $settings, string $categoriaId): ?string
+{
+    $label = $categoriaId;
+    foreach ((array) $settings['categories'] as $cat) {
+        if (($cat['id'] ?? '') === $categoriaId) {
+            $label = (string) ($cat['label'] ?? $categoriaId);
+            break;
+        }
+    }
+    $keys = [grooflow_cashback_config_key($label), grooflow_cashback_config_key($categoriaId)];
+    $lines = array_values(array_filter(
+        (array) ($provider['pettyExpenseLines'] ?? []),
+        static fn ($l) => is_array($l) && trim((string) ($l['defaultAccountingAccount'] ?? '')) !== ''
+    ));
+    foreach ($lines as $l) {
+        if (in_array(grooflow_cashback_config_key((string) ($l['commercialCategory'] ?? '')), $keys, true)) {
+            return trim((string) $l['defaultAccountingAccount']);
+        }
+    }
+    $general = trim((string) ($provider['accountingAccount'] ?? ''));
+    if ($general !== '') {
+        return $general;
+    }
+    if (count($lines) === 1) {
+        return trim((string) $lines[0]['defaultAccountingAccount']);
+    }
+
+    return null;
+}
+
+/** Exige que el emisor esté en el catálogo de Proveedores y devuelve la cuenta sugerida. */
+function grooflow_cashback_require_provider(PDO $pdo, array $settings, array $data): ?string
+{
+    $provider = grooflow_cashback_provider_by_ruc($pdo, $data['emisor_ruc']);
+    if ($provider === null) {
+        throw new GrooflowValidation([
+            'emisorRuc' => 'El proveedor no está registrado en el catálogo de Proveedores. Pide a Contabilidad que lo registre antes de subir la factura.',
+        ]);
+    }
+
+    return grooflow_cashback_suggest_account($provider, $settings, $data['categoria']);
+}
+
+function grooflow_cashback_clean_account(mixed $value): ?string
+{
+    $v = preg_replace('/[^0-9A-Za-z.\-]/', '', trim((string) $value)) ?? '';
+
+    return $v !== '' ? mb_substr($v, 0, 30) : null;
 }
 
 /** @return array<string, mixed> */
@@ -493,6 +574,7 @@ function grooflow_cashback_row_to_app(array $row): array
         'categoria' => (string) $row['categoria'],
         'motivo' => (string) $row['motivo'],
         'centroCosto' => $row['centro_costo'],
+        'cuentaContable' => $row['cuenta_contable'] ?? null,
         'alertas' => (array) (grooflow_json_decode($row['alertas'] ?? null) ?? []),
         'estado' => (string) $row['estado'],
         'cashbackMonto' => $row['cashback_monto'] !== null ? (float) $row['cashback_monto'] : null,
@@ -610,22 +692,26 @@ function grooflow_cashback_create(PDO $pdo, array $in): array
         $alerts[] = 'Usuario sin colaborador Buk vinculado.';
     }
     $data = $validated['data'];
+    $account = grooflow_cashback_require_provider($pdo, $settings, $data);
+    if ($account === null) {
+        $alerts[] = 'El proveedor no tiene cuenta contable configurada: Contabilidad debe asignarla al aprobar.';
+    }
 
-    $id = grooflow_atomic($pdo, static function () use ($pdo, $data, $photo, $alerts, $colab, $user, $userId): int {
+    $id = grooflow_atomic($pdo, static function () use ($pdo, $data, $photo, $alerts, $colab, $user, $userId, $account): int {
         grooflow_cashback_assert_unique($pdo, $data, $photo['hash'], 0);
         $pdo->prepare('
             INSERT INTO grooflow_cashback_facturas
                 (usuario_id, usuario_nombre, colaborador_buk_id, colaborador_doc, sede,
                  emisor_ruc, emisor_nombre, emisor_estado, emisor_condicion, tipo_doc, serie, numero,
                  fecha_emision, periodo, base, igv, total, comprador_ruc, categoria, motivo, centro_costo,
-                 qr_raw, photo_hash, alertas, estado)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \'en_revision\')
+                 cuenta_contable, qr_raw, photo_hash, alertas, estado)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \'en_revision\')
         ')->execute([
             $userId, grooflow_cashback_user_name($user), $colab['bukId'], $colab['documento'], $colab['sede'],
             $data['emisor_ruc'], $data['emisor_nombre'], $data['emisor_estado'], $data['emisor_condicion'],
             $data['tipo_doc'], $data['serie'], $data['numero'], $data['fecha_emision'], $data['periodo'],
             $data['base'], $data['igv'], $data['total'], $data['comprador_ruc'], $data['categoria'],
-            $data['motivo'], $data['centro_costo'], $data['qr_raw'], $photo['hash'], grooflow_json_encode($alerts),
+            $data['motivo'], $data['centro_costo'], $account, $data['qr_raw'], $photo['hash'], grooflow_json_encode($alerts),
         ]);
         $newId = (int) $pdo->lastInsertId();
         $pdo->prepare('INSERT INTO grooflow_cashback_fotos (factura_id, mime, size_bytes, data) VALUES (?, ?, ?, ?)')
@@ -647,8 +733,12 @@ function grooflow_cashback_update_own(PDO $pdo, int $id, array $in): array
     $photo = grooflow_cashback_decode_photo($in['photo'] ?? null, false);
     $data = $validated['data'];
     $alerts = $validated['alerts'];
+    $account = grooflow_cashback_require_provider($pdo, $settings, $data);
+    if ($account === null) {
+        $alerts[] = 'El proveedor no tiene cuenta contable configurada: Contabilidad debe asignarla al aprobar.';
+    }
 
-    grooflow_atomic($pdo, static function () use ($pdo, $id, $userId, $data, $photo, $alerts): void {
+    grooflow_atomic($pdo, static function () use ($pdo, $id, $userId, $data, $photo, $alerts, $account): void {
         $row = grooflow_cashback_find($pdo, $id, true);
         if ((int) $row['usuario_id'] !== $userId) {
             throw new RuntimeException('No tienes permiso para editar esta factura');
@@ -664,14 +754,14 @@ function grooflow_cashback_update_own(PDO $pdo, int $id, array $in): array
             UPDATE grooflow_cashback_facturas SET
                 emisor_ruc = ?, emisor_nombre = ?, emisor_estado = ?, emisor_condicion = ?, serie = ?, numero = ?,
                 fecha_emision = ?, periodo = ?, base = ?, igv = ?, total = ?, comprador_ruc = ?, categoria = ?,
-                motivo = ?, centro_costo = ?, qr_raw = COALESCE(?, qr_raw), photo_hash = COALESCE(?, photo_hash),
+                motivo = ?, centro_costo = ?, cuenta_contable = ?, qr_raw = COALESCE(?, qr_raw), photo_hash = COALESCE(?, photo_hash),
                 alertas = ?, estado = \'en_revision\'
             WHERE id = ?
         ')->execute([
             $data['emisor_ruc'], $data['emisor_nombre'], $data['emisor_estado'], $data['emisor_condicion'],
             $data['serie'], $data['numero'], $data['fecha_emision'], $data['periodo'], $data['base'], $data['igv'],
             $data['total'], $data['comprador_ruc'], $data['categoria'], $data['motivo'], $data['centro_costo'],
-            $data['qr_raw'], $photo['hash'] ?? null, grooflow_json_encode($alerts), $id,
+            $account, $data['qr_raw'], $photo['hash'] ?? null, grooflow_json_encode($alerts), $id,
         ]);
         if ($photo !== null) {
             $pdo->prepare('REPLACE INTO grooflow_cashback_fotos (factura_id, mime, size_bytes, data) VALUES (?, ?, ?, ?)')
@@ -799,7 +889,14 @@ function grooflow_cashback_review(PDO $pdo, int $id, array $in): array
         $igv = (float) $row['igv'];
         $total = (float) $row['total'];
         $base = (float) $row['base'];
+        $account = $row['cuenta_contable'] ?? null;
+        if (array_key_exists('cuentaContable', $in) && in_array($action, ['approve', 'observe'], true)) {
+            $account = grooflow_cashback_clean_account($in['cuentaContable']);
+        }
         if ($action === 'approve') {
+            if ($account === null || $account === '') {
+                throw new GrooflowValidation(['cuentaContable' => 'Asigna la cuenta contable de gasto antes de aprobar.']);
+            }
             $fixIgv = grooflow_cashback_money($in['igv'] ?? null);
             $fixTotal = grooflow_cashback_money($in['total'] ?? null);
             if ($fixIgv !== null && $fixIgv > 0) {
@@ -831,11 +928,11 @@ function grooflow_cashback_review(PDO $pdo, int $id, array $in): array
 
         $pdo->prepare('
             UPDATE grooflow_cashback_facturas SET
-                estado = ?, igv = ?, total = ?, base = ?, cashback_monto = ?, regla_snapshot = ?,
+                estado = ?, igv = ?, total = ?, base = ?, cashback_monto = ?, regla_snapshot = ?, cuenta_contable = ?,
                 revisor_id = ?, revisor_nombre = ?, revisado_at = NOW(), nota_revision = ?
             WHERE id = ?
         ')->execute([
-            $next, $igv, $total, $base, $amount, $snapshot,
+            $next, $igv, $total, $base, $amount, $snapshot, $account,
             $reviewerId, grooflow_cashback_user_name($user), $note !== '' ? $note : null, $id,
         ]);
         grooflow_audit_insert($pdo, $user, 'cashback.review', [
@@ -845,6 +942,7 @@ function grooflow_cashback_review(PDO $pdo, int $id, array $in): array
             'from' => $estado,
             'to' => $next,
             'cashback' => $amount,
+            'cuenta' => $account,
             'note' => $note,
         ]);
     });
@@ -1133,6 +1231,19 @@ function grooflow_cashback_dispatch(PDO $pdo, string $path, string $method): boo
     }
     if ($path === '/cashback/settings' && $method === 'PUT') {
         api_json_response(['ok' => true, 'settings' => grooflow_cashback_save_settings($pdo, api_request_json())]);
+        return true;
+    }
+    if ($path === '/cashback/provider' && $method === 'GET') {
+        $provider = grooflow_cashback_provider_by_ruc($pdo, (string) ($_GET['ruc'] ?? ''));
+        $settings = grooflow_cashback_get_settings($pdo);
+        api_json_response([
+            'ok' => true,
+            'registered' => $provider !== null,
+            'nombre' => $provider !== null ? (string) ($provider['name'] ?? '') : null,
+            'cuentaContable' => $provider !== null
+                ? grooflow_cashback_suggest_account($provider, $settings, (string) ($_GET['categoria'] ?? ''))
+                : null,
+        ]);
         return true;
     }
     if ($path === '/cashback/invoices' && $method === 'GET') {
