@@ -312,22 +312,47 @@ function grooflow_merge_scoped(array $full, array $visible, array $incoming): ar
     return $out;
 }
 
-function grooflow_assert_resource_action(PDO $pdo, string $key, string $action): void
+/**
+ * ¿El contexto de acceso permite la acción CRUD sobre la clave KV?
+ * Usado por grooflow_assert_resource_action (y tests).
+ */
+function grooflow_resource_action_allowed(array $ctx, string $key, string $action): bool
 {
-    $ctx = grooflow_access_context($pdo);
-    if ($ctx['admin']) return;
+    if (!empty($ctx['admin'])) {
+        return true;
+    }
     foreach (grooflow_resource_modules($key, $action !== 'ver') as $module) {
-        if (($ctx['actions'][$module][$action] ?? false) === true) return;
+        if (($ctx['actions'][$module][$action] ?? false) === true) {
+            return true;
+        }
         // Configurar sede/organigrama implica poder editar el blob de Asistencia.
         if (
             $action === 'editar'
             && $key === 'settings:asistencia'
             && (($ctx['actions'][$module]['configurar'] ?? false) === true)
         ) {
-            return;
+            return true;
+        }
+        // Alta operativa (checklist, mant., combustible / movimientos de inventario)
+        // siempre actualiza la ficha padre (km, última inspección, estado…). Quien puede
+        // «agregar» debe poder completar ese guardado sin tener «editar» de maestro.
+        if (
+            $action === 'editar'
+            && in_array($key, ['data:fleet', 'data:inventory'], true)
+            && (($ctx['actions'][$module]['agregar'] ?? false) === true)
+        ) {
+            return true;
         }
     }
-    throw new RuntimeException('Sin permiso para la acción ' . $action);
+
+    return false;
+}
+
+function grooflow_assert_resource_action(PDO $pdo, string $key, string $action): void
+{
+    if (!grooflow_resource_action_allowed(grooflow_access_context($pdo), $key, $action)) {
+        throw new RuntimeException('Sin permiso para la acción ' . $action);
+    }
 }
 
 function grooflow_required_actions(mixed $before, mixed $after): array
