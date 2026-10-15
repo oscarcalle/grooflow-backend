@@ -88,20 +88,55 @@ function grooflow_petty_cash_can_view_all(array $ctx): bool
     return false;
 }
 
-/** Aprueba / dotación / refuerzo (Auditoría + admin). */
+/** Aprueba / dotación / refuerzo (Administrador, Auditoría y Gerencia). */
 function grooflow_petty_cash_can_audit(array $ctx): bool
 {
     if (!empty($ctx['admin'])) return true;
     $role = strtolower(trim((string) ($ctx['role'] ?? '')));
-    if (in_array($role, ['auditoria', 'admin', 'super_admin'], true)) return true;
+    if (in_array($role, ['auditoria', 'admin', 'super_admin', 'manager'], true)) return true;
     $blob = grooflow_petty_cash_identity_blob($ctx);
-    foreach (['auditor', 'auditoria'] as $hint) {
+    foreach (['auditor', 'auditoria', 'gerencia', 'gerente', 'manager'] as $hint) {
         if (str_contains($blob, $hint)) return true;
     }
     $perms = $ctx['permissions'] ?? [];
     if (!empty($perms['Auditoría']) && !empty($perms['Caja Chica'])) return true;
 
     return false;
+}
+
+/**
+ * Meta de caja chica (cierres / pre-cierres / dotaciones): no usa sede ni userId,
+ * sino custodianId. Quien ve todos los fondos recibe el blob completo.
+ *
+ * @param array<string, mixed> $ctx
+ * @param array<string, mixed> $value
+ * @return array<string, mixed>
+ */
+function grooflow_project_petty_cash_meta(array $ctx, array $value): array
+{
+    if (!empty($ctx['admin']) || grooflow_petty_cash_can_view_all($ctx)) {
+        return $value;
+    }
+    $uid = (string) ($ctx['id'] ?? '');
+    $out = $value;
+    foreach (['weekClosures', 'weekPreClosures', 'fundDeliveries'] as $field) {
+        if (!isset($value[$field]) || !is_array($value[$field])) {
+            continue;
+        }
+        $out[$field] = array_values(array_filter(
+            $value[$field],
+            static function ($r) use ($uid) {
+                if (!is_array($r)) {
+                    return false;
+                }
+                $cid = trim((string) ($r['custodianId'] ?? ''));
+
+                return $cid !== '' && $cid === $uid;
+            }
+        ));
+    }
+
+    return $out;
 }
 
 function grooflow_petty_cash_row_in_scope(array $ctx, array $row): bool
@@ -274,6 +309,9 @@ function grooflow_project_resource(array $ctx, string $key, mixed $value): mixed
     }
     if ($key === 'data:pettyCash' && array_is_list($value)) {
         return array_values(array_filter($value, fn ($r) => is_array($r) && grooflow_petty_cash_row_in_scope($ctx, $r)));
+    }
+    if ($key === 'data:pettyCashMeta') {
+        return grooflow_project_petty_cash_meta($ctx, $value);
     }
     if (array_is_list($value)) return array_values(array_filter($value, fn ($r) => is_array($r) && grooflow_row_in_scope($ctx, $r)));
     // Object datasets: expose scoped record arrays only; credentials and global settings stay server-owned.

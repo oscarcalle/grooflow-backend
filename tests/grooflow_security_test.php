@@ -8,6 +8,48 @@ require_once __DIR__ . '/../lib/grooflow_kv.php';
 require_once __DIR__ . '/../lib/grooflow_resource_access.php';
 require_once __DIR__ . '/../lib/grooflow_resource_store.php';
 
+function test_petty_cash_meta_visible_to_auditoria(): void {
+    $meta = [
+        'weekClosures' => [],
+        'weekPreClosures' => [],
+        'fundDeliveries' => [
+            ['id' => 'd1', 'custodianId' => '10', 'weekNumber' => '2026-W15', 'deliveredAmount' => 500],
+            ['id' => 'd2', 'custodianId' => '11', 'weekNumber' => '2026-W15', 'deliveredAmount' => 300],
+        ],
+    ];
+    $auditoria = [
+        'admin' => false,
+        'allSedes' => false,
+        'id' => '99',
+        'role' => 'groomer',
+        'nivelNombre' => 'Auditoria',
+        'roleLabel' => '',
+        'permissions' => ['Auditoría' => true, 'Caja Chica' => true],
+        'sedes' => ['Benavides'],
+        'actions' => [],
+    ];
+    $projected = grooflow_project_petty_cash_meta($auditoria, $meta);
+    if (count($projected['fundDeliveries'] ?? []) !== 2) {
+        throw new RuntimeException('Auditoría debe ver todas las dotaciones en pettyCashMeta');
+    }
+    $custodian = [
+        'admin' => false,
+        'allSedes' => false,
+        'id' => '10',
+        'role' => 'groomer',
+        'nivelNombre' => 'Encargado de Sede',
+        'roleLabel' => '',
+        'permissions' => ['Caja Chica' => true],
+        'sedes' => ['Benavides'],
+        'actions' => [],
+    ];
+    $own = grooflow_project_petty_cash_meta($custodian, $meta);
+    if (count($own['fundDeliveries'] ?? []) !== 1 || ($own['fundDeliveries'][0]['custodianId'] ?? '') !== '10') {
+        throw new RuntimeException('Responsable solo debe ver su propia dotación');
+    }
+    echo "✓ Test PASSED: pettyCashMeta fundDeliveries visible to auditoría; scoped for custodian\n";
+}
+
 function test_fleet_agregar_covers_editar_side_effects(): void {
     $ctx = [
         'admin' => false,
@@ -66,6 +108,7 @@ function test_grooflow_resource_store_multicurrency_validation(): void {
     echo "✓ Test PASSED: Resource store accepts multi-currency balance objects {PEN, USD}\n";
 }
 
+test_petty_cash_meta_visible_to_auditoria();
 test_fleet_agregar_covers_editar_side_effects();
 test_grooflow_kv_array_tables_excludes_object_datasets();
 test_grooflow_resource_store_multicurrency_validation();
