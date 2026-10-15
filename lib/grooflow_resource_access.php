@@ -143,8 +143,21 @@ function grooflow_petty_cash_row_in_scope(array $ctx, array $row): bool
 {
     if (grooflow_petty_cash_can_view_all($ctx)) {
         if (!empty($ctx['allSedes'])) return true;
+        // Dotaciones / ingresos globales llegan sin sede. Si exigimos sede o userId
+        // propios, los perfiles elevados (Auditoría/Gerencia/Contabilidad) no ven ni
+        // pueden persistir esas líneas (write-gate compara projected vs incoming).
+        $loc = '';
+        foreach (['workSede', 'sede', 'location', 'branchId', 'homeBase', 'homeSede'] as $field) {
+            if (isset($row[$field]) && is_string($row[$field]) && trim($row[$field]) !== '') {
+                $loc = trim($row[$field]);
+                break;
+            }
+        }
+        if ($loc === '') {
+            return true;
+        }
 
-        return grooflow_row_in_scope($ctx, $row);
+        return in_array($loc, $ctx['sedes'] ?? [], true);
     }
     $uid = (string) ($ctx['id'] ?? '');
     $cid = trim((string) ($row['custodianId'] ?? ''));

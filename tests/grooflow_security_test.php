@@ -8,6 +8,70 @@ require_once __DIR__ . '/../lib/grooflow_kv.php';
 require_once __DIR__ . '/../lib/grooflow_resource_access.php';
 require_once __DIR__ . '/../lib/grooflow_resource_store.php';
 
+function test_petty_cash_fund_delivery_visible_without_location(): void {
+    $fundDelivery = [
+        'id' => 'pc-fd-1',
+        'type' => 'income',
+        'incomeSubtype' => 'fund_delivery',
+        'custodianId' => '10',
+        'amount' => 600,
+        'status' => 'approved',
+        // sin location / sede — típico de dotación semanal
+    ];
+    $expenseInSede = [
+        'id' => 'pc-ex-1',
+        'type' => 'expense',
+        'custodianId' => '10',
+        'location' => 'Benavides',
+        'amount' => 50,
+        'status' => 'pending',
+    ];
+    $expenseOtherSede = [
+        'id' => 'pc-ex-2',
+        'type' => 'expense',
+        'custodianId' => '11',
+        'location' => 'Miraflores',
+        'amount' => 80,
+        'status' => 'pending',
+    ];
+    $auditoria = [
+        'admin' => false,
+        'allSedes' => false,
+        'id' => '99',
+        'role' => 'groomer',
+        'nivelNombre' => 'Auditoria',
+        'roleLabel' => '',
+        'permissions' => ['Auditoría' => true, 'Caja Chica' => true],
+        'sedes' => ['Benavides'],
+        'actions' => [],
+    ];
+    if (!grooflow_petty_cash_row_in_scope($auditoria, $fundDelivery)) {
+        throw new RuntimeException('Auditoría debe ver dotación sin sede');
+    }
+    if (!grooflow_petty_cash_row_in_scope($auditoria, $expenseInSede)) {
+        throw new RuntimeException('Auditoría debe ver gasto de su sede');
+    }
+    if (grooflow_petty_cash_row_in_scope($auditoria, $expenseOtherSede)) {
+        throw new RuntimeException('Auditoría no debe ver gasto de otra sede');
+    }
+    $projected = grooflow_project_resource($auditoria, 'data:pettyCash', [
+        $fundDelivery,
+        $expenseInSede,
+        $expenseOtherSede,
+    ]);
+    $ids = array_map(static fn ($r) => (string) ($r['id'] ?? ''), is_array($projected) ? $projected : []);
+    if ($ids !== ['pc-fd-1', 'pc-ex-1']) {
+        throw new RuntimeException('Proyección pettyCash incorrecta: ' . json_encode($ids));
+    }
+    // Write-gate: projected(incoming) debe coincidir con incoming para poder guardar.
+    $incoming = [$fundDelivery, $expenseInSede];
+    $projIncoming = grooflow_project_resource($auditoria, 'data:pettyCash', $incoming);
+    if (grooflow_revision($projIncoming) !== grooflow_revision($incoming)) {
+        throw new RuntimeException('Write-gate bloquearía la dotación sin sede');
+    }
+    echo "✓ Test PASSED: fund_delivery sin sede visible y escribible para auditoría\n";
+}
+
 function test_petty_cash_meta_visible_to_auditoria(): void {
     $meta = [
         'weekClosures' => [],
@@ -108,6 +172,7 @@ function test_grooflow_resource_store_multicurrency_validation(): void {
     echo "✓ Test PASSED: Resource store accepts multi-currency balance objects {PEN, USD}\n";
 }
 
+test_petty_cash_fund_delivery_visible_without_location();
 test_petty_cash_meta_visible_to_auditoria();
 test_fleet_agregar_covers_editar_side_effects();
 test_grooflow_kv_array_tables_excludes_object_datasets();
