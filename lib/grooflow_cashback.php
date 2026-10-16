@@ -142,6 +142,21 @@ function grooflow_cashback_provider_by_ruc(PDO $pdo, string $ruc): ?array
  * motivo cuya categoría coincide con la categoría de Cashback, cuenta general del proveedor
  * o, si tiene un único motivo con cuenta, ese.
  */
+/**
+ * Cuenta de gasto global Cashback (opción A) desde settings:system.accounting.
+ */
+function grooflow_cashback_global_expense_account(PDO $pdo): ?string
+{
+    require_once __DIR__ . '/grooflow_kv.php';
+    $sys = grooflow_kv_get($pdo, 'settings:system');
+    if (!is_array($sys)) {
+        return null;
+    }
+    $acc = $sys['accounting']['cashbackExpenseAccountCode'] ?? null;
+
+    return grooflow_cashback_clean_account($acc);
+}
+
 function grooflow_cashback_suggest_account(array $provider, array $settings, string $categoriaId): ?string
 {
     $label = $categoriaId;
@@ -172,7 +187,11 @@ function grooflow_cashback_suggest_account(array $provider, array $settings, str
     return null;
 }
 
-/** Exige que el emisor esté en el catálogo de Proveedores y devuelve la cuenta sugerida. */
+/**
+ * Exige proveedor en catálogo y resuelve cuenta de gasto:
+ * 1) cuenta global Cashback (opción A) si está configurada;
+ * 2) si no, sugerencia por proveedor / categoría.
+ */
 function grooflow_cashback_require_provider(PDO $pdo, array $settings, array $data): ?string
 {
     $provider = grooflow_cashback_provider_by_ruc($pdo, $data['emisor_ruc']);
@@ -180,6 +199,10 @@ function grooflow_cashback_require_provider(PDO $pdo, array $settings, array $da
         throw new GrooflowValidation([
             'emisorRuc' => 'El proveedor no está registrado en el catálogo de Proveedores. Pide a Contabilidad que lo registre antes de subir la factura.',
         ]);
+    }
+    $global = grooflow_cashback_global_expense_account($pdo);
+    if ($global !== null) {
+        return $global;
     }
 
     return grooflow_cashback_suggest_account($provider, $settings, $data['categoria']);
@@ -694,7 +717,7 @@ function grooflow_cashback_create(PDO $pdo, array $in): array
     $data = $validated['data'];
     $account = grooflow_cashback_require_provider($pdo, $settings, $data);
     if ($account === null) {
-        $alerts[] = 'El proveedor no tiene cuenta contable configurada: Contabilidad debe asignarla al aprobar.';
+        $alerts[] = 'Falta la cuenta de gasto Cashback: Contabilidad debe configurarla en Contabilidad → Plan de cuentas (Cashback: cuenta de gasto) o en la ficha del proveedor.';
     }
 
     $id = grooflow_atomic($pdo, static function () use ($pdo, $data, $photo, $alerts, $colab, $user, $userId, $account): int {
@@ -735,7 +758,7 @@ function grooflow_cashback_update_own(PDO $pdo, int $id, array $in): array
     $alerts = $validated['alerts'];
     $account = grooflow_cashback_require_provider($pdo, $settings, $data);
     if ($account === null) {
-        $alerts[] = 'El proveedor no tiene cuenta contable configurada: Contabilidad debe asignarla al aprobar.';
+        $alerts[] = 'Falta la cuenta de gasto Cashback: Contabilidad debe configurarla en Contabilidad → Plan de cuentas (Cashback: cuenta de gasto) o en la ficha del proveedor.';
     }
 
     grooflow_atomic($pdo, static function () use ($pdo, $id, $userId, $data, $photo, $alerts, $account): void {
@@ -889,13 +912,19 @@ function grooflow_cashback_review(PDO $pdo, int $id, array $in): array
         $igv = (float) $row['igv'];
         $total = (float) $row['total'];
         $base = (float) $row['base'];
+        $globalExpense = grooflow_cashback_global_expense_account($pdo);
         $account = $row['cuenta_contable'] ?? null;
-        if (array_key_exists('cuentaContable', $in) && in_array($action, ['approve', 'observe'], true)) {
+        if ($globalExpense !== null) {
+            // Opción A: siempre la cuenta global configurada en Contabilidad.
+            $account = $globalExpense;
+        } elseif (array_key_exists('cuentaContable', $in) && in_array($action, ['approve', 'observe'], true)) {
             $account = grooflow_cashback_clean_account($in['cuentaContable']);
         }
         if ($action === 'approve') {
             if ($account === null || $account === '') {
-                throw new GrooflowValidation(['cuentaContable' => 'Asigna la cuenta contable de gasto antes de aprobar.']);
+                throw new GrooflowValidation([
+                    'cuentaContable' => 'Configura «Cashback: cuenta de gasto (debe)» en Contabilidad → Plan de cuentas, o asigna la cuenta al aprobar.',
+                ]);
             }
             $fixIgv = grooflow_cashback_money($in['igv'] ?? null);
             $fixTotal = grooflow_cashback_money($in['total'] ?? null);
@@ -1236,13 +1265,21 @@ function grooflow_cashback_dispatch(PDO $pdo, string $path, string $method): boo
     if ($path === '/cashback/provider' && $method === 'GET') {
         $provider = grooflow_cashback_provider_by_ruc($pdo, (string) ($_GET['ruc'] ?? ''));
         $settings = grooflow_cashback_get_settings($pdo);
+        $global = grooflow_cashback_global_expense_account($pdo);
+        $suggested = null;
+        if ($provider !== null) {
+            $suggested = $global ?? grooflow_cashback_suggest_account(
+                $provider,
+                $settings,
+                (string) ($_GET['categoria'] ?? '')
+            );
+        }
         api_json_response([
             'ok' => true,
             'registered' => $provider !== null,
             'nombre' => $provider !== null ? (string) ($provider['name'] ?? '') : null,
-            'cuentaContable' => $provider !== null
-                ? grooflow_cashback_suggest_account($provider, $settings, (string) ($_GET['categoria'] ?? ''))
-                : null,
+            'cuentaContable' => $suggested,
+            'cuentaGlobal' => $global,
         ]);
         return true;
     }
