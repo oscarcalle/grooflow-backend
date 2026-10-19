@@ -210,6 +210,203 @@ function grooflow_assert_petty_cash_write(array $ctx, array $before, array $afte
     }
 }
 
+/** Normaliza weekNumber a clave comparable (YYYY-Www o legado numérico). */
+function grooflow_petty_cash_week_sort_key(string $raw): int
+{
+    $text = trim($raw);
+    if (preg_match('/^(\d{4})-W(\d{1,2})$/i', $text, $m)) {
+        return ((int) $m[1]) * 100 + (int) $m[2];
+    }
+    if (preg_match('/^\d{1,2}$/', $text)) {
+        return (int) $text;
+    }
+
+    return 0;
+}
+
+function grooflow_petty_cash_week_matches(string $a, string $b): bool
+{
+    $a = trim($a);
+    $b = trim($b);
+    if ($a === '' || $b === '') {
+        return false;
+    }
+    if (strcasecmp($a, $b) === 0) {
+        return true;
+    }
+    // Legado numérico vs canónico: comparar solo número de semana.
+    $wa = preg_match('/^(?:\d{4}-W)?(\d{1,2})$/i', $a, $ma) ? (int) $ma[1] : null;
+    $wb = preg_match('/^(?:\d{4}-W)?(\d{1,2})$/i', $b, $mb) ? (int) $mb[1] : null;
+    if ($wa === null || $wb === null) {
+        return false;
+    }
+    $aCanon = (bool) preg_match('/^\d{4}-W\d{1,2}$/i', $a);
+    $bCanon = (bool) preg_match('/^\d{4}-W\d{1,2}$/i', $b);
+    if ($aCanon && $bCanon) {
+        return strcasecmp($a, $b) === 0;
+    }
+
+    return $wa === $wb;
+}
+
+/**
+ * Índice custodianId|week → cierre.
+ *
+ * @param list<array<string, mixed>> $closures
+ * @return array<string, array<string, mixed>>
+ */
+function grooflow_petty_cash_closure_index(array $closures): array
+{
+    $out = [];
+    foreach ($closures as $c) {
+        if (!is_array($c)) {
+            continue;
+        }
+        $cid = trim((string) ($c['custodianId'] ?? ''));
+        $wk = trim((string) ($c['weekNumber'] ?? ''));
+        if ($cid === '' || $wk === '') {
+            continue;
+        }
+        $out[$cid . '|' . strtolower($wk)] = $c;
+    }
+
+    return $out;
+}
+
+/**
+ * Solo admin puede quitar cierres. Si quita uno, no debe quedar cierre posterior del mismo custodio.
+ *
+ * @param array<string, mixed> $before
+ * @param array<string, mixed> $after
+ */
+function grooflow_assert_petty_cash_meta_write(array $ctx, array $before, array $after): void
+{
+    $beforeClosures = isset($before['weekClosures']) && is_array($before['weekClosures'])
+        ? $before['weekClosures']
+        : [];
+    $afterClosures = isset($after['weekClosures']) && is_array($after['weekClosures'])
+        ? $after['weekClosures']
+        : [];
+    $beforeIdx = grooflow_petty_cash_closure_index($beforeClosures);
+    $afterIdx = grooflow_petty_cash_closure_index($afterClosures);
+    $removed = [];
+    foreach ($beforeIdx as $key => $row) {
+        if (!isset($afterIdx[$key])) {
+            $removed[] = $row;
+        }
+    }
+    if ($removed === []) {
+        return;
+    }
+    if (empty($ctx['admin'])) {
+        throw new RuntimeException('Solo el administrador de sistema puede revertir un cierre de semana');
+    }
+    foreach ($removed as $row) {
+        $cid = trim((string) ($row['custodianId'] ?? ''));
+        $wk = trim((string) ($row['weekNumber'] ?? ''));
+        $sort = grooflow_petty_cash_week_sort_key($wk);
+        foreach ($afterClosures as $other) {
+            if (!is_array($other)) {
+                continue;
+            }
+            if (trim((string) ($other['custodianId'] ?? '')) !== $cid) {
+                continue;
+            }
+            $otherWk = trim((string) ($other['weekNumber'] ?? ''));
+            if (grooflow_petty_cash_week_matches($otherWk, $wk)) {
+                continue;
+            }
+            if (grooflow_petty_cash_week_sort_key($otherWk) > $sort) {
+                throw new RuntimeException(
+                    'No se puede revertir el cierre: hay semanas posteriores ya cerradas. Revierta primero la más reciente.'
+                );
+            }
+        }
+    }
+}
+
+/**
+ * Impide modificar movimientos de una semana ya cerrada (hay que revertir el cierre antes).
+ *
+ * @param list<array<string, mixed>> $before
+ * @param list<array<string, mixed>> $after
+ * @param list<array<string, mixed>> $closures
+ */
+function grooflow_assert_petty_cash_not_in_closed_week(
+    array $before,
+    array $after,
+    array $closures
+): void {
+    if ($closures === []) {
+        return;
+    }
+    $closed = [];
+    foreach ($closures as $c) {
+        if (!is_array($c)) {
+            continue;
+        }
+        $cid = trim((string) ($c['custodianId'] ?? ''));
+        $wk = trim((string) ($c['weekNumber'] ?? ''));
+        if ($cid === '' || $wk === '') {
+            continue;
+        }
+        $closed[] = [$cid, $wk];
+    }
+    $isClosed = static function (string $cid, string $wk) use ($closed): bool {
+        foreach ($closed as [$cCid, $cWk]) {
+            if ($cCid === $cid && grooflow_petty_cash_week_matches($cWk, $wk)) {
+                return true;
+            }
+        }
+
+        return false;
+    };
+
+    $byId = [];
+    foreach ($before as $row) {
+        if (is_array($row) && isset($row['id'])) {
+            $byId[(string) $row['id']] = $row;
+        }
+    }
+    $afterIds = [];
+    foreach ($after as $row) {
+        if (!is_array($row) || !isset($row['id'])) {
+            continue;
+        }
+        $id = (string) $row['id'];
+        $afterIds[$id] = true;
+        $prev = $byId[$id] ?? null;
+        if (is_array($prev) && json_encode($prev) === json_encode($row)) {
+            continue;
+        }
+        $cid = trim((string) ($row['custodianId'] ?? ($prev['custodianId'] ?? '')));
+        if ($cid === '') {
+            $cid = trim((string) ($row['userId'] ?? ($prev['userId'] ?? '')));
+        }
+        $wk = trim((string) ($row['weekNumber'] ?? ($prev['weekNumber'] ?? '')));
+        if ($cid !== '' && $wk !== '' && $isClosed($cid, $wk)) {
+            throw new RuntimeException(
+                'La semana está cerrada. Un administrador debe revertir el cierre antes de modificar movimientos.'
+            );
+        }
+    }
+    foreach ($byId as $id => $prev) {
+        if (isset($afterIds[$id])) {
+            continue;
+        }
+        $cid = trim((string) ($prev['custodianId'] ?? ''));
+        if ($cid === '') {
+            $cid = trim((string) ($prev['userId'] ?? ''));
+        }
+        $wk = trim((string) ($prev['weekNumber'] ?? ''));
+        if ($cid !== '' && $wk !== '' && $isClosed($cid, $wk)) {
+            throw new RuntimeException(
+                'La semana está cerrada. Un administrador debe revertir el cierre antes de modificar movimientos.'
+            );
+        }
+    }
+}
+
 function grooflow_resource_allowed(array $ctx, string $key, bool $write = false): bool
 {
     if (!empty($ctx['admin'])) return true;

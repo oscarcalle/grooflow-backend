@@ -120,8 +120,18 @@ function grooflow_write_resource(PDO $pdo, string $key, mixed $incoming, ?string
             $beforeList = is_array($visible) && array_is_list($visible) ? $visible : [];
             $afterList = is_array($incoming) && array_is_list($incoming) ? $incoming : [];
             grooflow_assert_petty_cash_write($ctx, $beforeList, $afterList);
+            $metaFull = grooflow_kv_get($pdo, 'data:pettyCashMeta');
+            $closures = is_array($metaFull) && isset($metaFull['weekClosures']) && is_array($metaFull['weekClosures'])
+                ? $metaFull['weekClosures']
+                : [];
+            grooflow_assert_petty_cash_not_in_closed_week($beforeList, $afterList, $closures);
             require_once __DIR__ . '/grooflow_receipts.php';
             grooflow_receipt_assert_petty_cash_not_in_cashback($pdo, $beforeList, $afterList);
+        }
+        if ($key === 'data:pettyCashMeta') {
+            $beforeMeta = is_array($visible) ? $visible : [];
+            $afterMeta = is_array($incoming) ? $incoming : [];
+            grooflow_assert_petty_cash_meta_write($ctx, $beforeMeta, $afterMeta);
         }
         $global = in_array($key, [
             'data:treasuryBankBalance',

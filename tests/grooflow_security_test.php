@@ -156,6 +156,76 @@ function test_grooflow_kv_array_tables_excludes_object_datasets(): void {
     echo "✓ Test PASSED: KV Array tables map excludes object datasets (data:fleet, data:inventory)\n";
 }
 
+function test_petty_cash_meta_reopen_requires_admin(): void {
+    $before = [
+        'weekClosures' => [
+            ['id' => 'c1', 'custodianId' => '10', 'weekNumber' => '2026-W10', 'carriedForward' => 50],
+            ['id' => 'c2', 'custodianId' => '10', 'weekNumber' => '2026-W11', 'carriedForward' => 80],
+        ],
+        'weekPreClosures' => [],
+        'fundDeliveries' => [],
+    ];
+    $afterLatest = [
+        'weekClosures' => [
+            ['id' => 'c1', 'custodianId' => '10', 'weekNumber' => '2026-W10', 'carriedForward' => 50],
+        ],
+        'weekPreClosures' => [],
+        'fundDeliveries' => [],
+    ];
+    $auditoria = [
+        'admin' => false,
+        'role' => 'auditoria',
+        'permissions' => ['Auditoría' => true, 'Caja Chica' => true],
+    ];
+    try {
+        grooflow_assert_petty_cash_meta_write($auditoria, $before, $afterLatest);
+        throw new RuntimeException('Auditoría no debería poder quitar cierres');
+    } catch (RuntimeException $e) {
+        if (!str_contains($e->getMessage(), 'administrador')) {
+            throw $e;
+        }
+    }
+    $admin = ['admin' => true, 'role' => 'admin'];
+    try {
+        grooflow_assert_petty_cash_meta_write($admin, $before, [
+            'weekClosures' => [
+                ['id' => 'c2', 'custodianId' => '10', 'weekNumber' => '2026-W11', 'carriedForward' => 80],
+            ],
+            'weekPreClosures' => [],
+            'fundDeliveries' => [],
+        ]);
+        throw new RuntimeException('No debería quitar W10 si W11 sigue cerrada');
+    } catch (RuntimeException $e) {
+        if (!str_contains($e->getMessage(), 'posteriores')) {
+            throw $e;
+        }
+    }
+    grooflow_assert_petty_cash_meta_write($admin, $before, $afterLatest);
+    echo "✓ Test PASSED: reopen weekClosures solo admin y sin semanas posteriores\n";
+}
+
+function test_petty_cash_closed_week_blocks_txn_write(): void {
+    $closures = [
+        ['custodianId' => '10', 'weekNumber' => '2026-W10'],
+    ];
+    $before = [
+        ['id' => 't1', 'custodianId' => '10', 'weekNumber' => '2026-W10', 'amount' => 20, 'status' => 'approved'],
+    ];
+    $after = [
+        ['id' => 't1', 'custodianId' => '10', 'weekNumber' => '2026-W10', 'amount' => 99, 'status' => 'approved'],
+    ];
+    try {
+        grooflow_assert_petty_cash_not_in_closed_week($before, $after, $closures);
+        throw new RuntimeException('Debe bloquear edición en semana cerrada');
+    } catch (RuntimeException $e) {
+        if (!str_contains($e->getMessage(), 'cerrada')) {
+            throw $e;
+        }
+    }
+    grooflow_assert_petty_cash_not_in_closed_week($before, $before, $closures);
+    echo "✓ Test PASSED: movimientos de semana cerrada no se modifican\n";
+}
+
 function test_grooflow_resource_store_multicurrency_validation(): void {
     $errors = [];
     $validBicurrency = ['PEN' => 1500, 'USD' => 450];
@@ -174,6 +244,8 @@ function test_grooflow_resource_store_multicurrency_validation(): void {
 
 test_petty_cash_fund_delivery_visible_without_location();
 test_petty_cash_meta_visible_to_auditoria();
+test_petty_cash_meta_reopen_requires_admin();
+test_petty_cash_closed_week_blocks_txn_write();
 test_fleet_agregar_covers_editar_side_effects();
 test_grooflow_kv_array_tables_excludes_object_datasets();
 test_grooflow_resource_store_multicurrency_validation();
