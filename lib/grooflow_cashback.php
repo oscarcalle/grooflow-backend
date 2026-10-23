@@ -228,7 +228,8 @@ function grooflow_cashback_default_settings(): array
         'releaseThreshold' => 50.0,
         'maxDaysOld' => 45,
         'payoutTreatment' => 'reembolso',
-        'essaludRate' => 9.0,
+        // EsSalud / remuneración desactivados en este despliegue (siempre reembolso).
+        'essaludRate' => 0.0,
         'categories' => [
             ['id' => 'alimentacion', 'label' => 'Alimentación', 'enabled' => true],
             ['id' => 'traslados', 'label' => 'Traslados', 'enabled' => true],
@@ -291,8 +292,9 @@ function grooflow_cashback_normalize_settings(array $raw): array
         'capAtIgv' => ($raw['capAtIgv'] ?? $d['capAtIgv']) !== false,
         'releaseThreshold' => $num($raw['releaseThreshold'] ?? null, $d['releaseThreshold'], 0, 1000000),
         'maxDaysOld' => (int) $num($raw['maxDaysOld'] ?? null, (float) $d['maxDaysOld'], 1, 400),
-        'payoutTreatment' => ($raw['payoutTreatment'] ?? '') === 'remuneracion' ? 'remuneracion' : 'reembolso',
-        'essaludRate' => $num($raw['essaludRate'] ?? null, $d['essaludRate'], 0, 100),
+        // Producto: solo reembolso (sin EsSalud / planilla).
+        'payoutTreatment' => 'reembolso',
+        'essaludRate' => 0.0,
         'categories' => $categories,
         'excludedNote' => mb_substr(trim((string) ($raw['excludedNote'] ?? $d['excludedNote'])), 0, 400),
     ];
@@ -340,9 +342,16 @@ function grooflow_cashback_require_action(PDO $pdo, string $action): void
     }
 }
 
+/** Revisión / saldos / liquidaciones: editar o configurar (no basta con solo exportar). */
 function grooflow_cashback_is_reviewer(PDO $pdo): bool
 {
-    return grooflow_cashback_can($pdo, 'editar') || grooflow_cashback_can($pdo, 'configurar') || grooflow_cashback_can($pdo, 'exportar');
+    return grooflow_cashback_can($pdo, 'editar') || grooflow_cashback_can($pdo, 'configurar');
+}
+
+/** Reportes agregados: revisores o quien solo tenga exportar. */
+function grooflow_cashback_can_report(PDO $pdo): bool
+{
+    return grooflow_cashback_is_reviewer($pdo) || grooflow_cashback_can($pdo, 'exportar');
 }
 
 function grooflow_cashback_user_name(array $row): string
@@ -481,9 +490,12 @@ function grooflow_cashback_validate_input(array $settings, array $in): array
     $compradorRuc = preg_replace('/\D/', '', (string) ($in['compradorRuc'] ?? '')) ?? '';
     $companyRucs = (array) $settings['companyRucs'];
     if ($companyRucs === []) {
-        $alerts[] = 'Aún no se configuró el RUC de la empresa en Cashback.';
+        $errors['compradorRuc'] = 'Configura el RUC de la empresa en Cashback → Reglas antes de registrar facturas.';
     } elseif (!in_array($compradorRuc, $companyRucs, true)) {
         $errors['compradorRuc'] = 'La factura debe estar emitida al RUC de la empresa (' . implode(' / ', $companyRucs) . ').';
+    }
+    if ($emisorRuc !== '' && in_array($emisorRuc, $companyRucs, true)) {
+        $errors['emisorRuc'] = 'El RUC del emisor no puede ser el de la empresa (adquirente).';
     }
 
     $categoria = trim((string) ($in['categoria'] ?? ''));
@@ -662,6 +674,20 @@ function grooflow_cashback_balance_for_user(PDO $pdo, int $userId, array $settin
     $pending = round((float) ($by['aprobada']['cb'] ?? 0), 2);
     $threshold = (float) $settings['releaseThreshold'];
 
+    // «liquidada» en factura = incluida en un lote; solo cuenta como recibido si el lote está pagado.
+    $stmtPaid = $pdo->prepare("
+        SELECT
+            COALESCE(SUM(CASE WHEN l.estado = 'pagada' THEN f.cashback_monto ELSE 0 END), 0) AS recibido,
+            COALESCE(SUM(CASE WHEN l.estado = 'generada' THEN f.cashback_monto ELSE 0 END), 0) AS en_lote
+        FROM grooflow_cashback_facturas f
+        INNER JOIN grooflow_cashback_liquidaciones l ON l.id = f.liquidacion_id
+        WHERE f.usuario_id = ? AND f.estado = 'liquidada'
+    ");
+    $stmtPaid->execute([$userId]);
+    $paidRow = $stmtPaid->fetch(PDO::FETCH_ASSOC) ?: [];
+    $recibido = round((float) ($paidRow['recibido'] ?? 0), 2);
+    $enLote = round((float) ($paidRow['en_lote'] ?? 0), 2);
+
     return [
         'acumulado' => $pending,
         'umbral' => $threshold,
@@ -671,7 +697,10 @@ function grooflow_cashback_balance_for_user(PDO $pdo, int $userId, array $settin
         'observadas' => (int) ($by['observada']['n'] ?? 0),
         'aprobadas' => (int) ($by['aprobada']['n'] ?? 0),
         'rechazadas' => (int) ($by['rechazada']['n'] ?? 0),
-        'liquidado' => round((float) ($by['liquidada']['cb'] ?? 0), 2),
+        /** @deprecated usar recibido; se mantiene por compat (solo montos ya pagados). */
+        'liquidado' => $recibido,
+        'recibido' => $recibido,
+        'enLiquidacion' => $enLote,
     ];
 }
 
@@ -711,9 +740,7 @@ function grooflow_cashback_create(PDO $pdo, array $in): array
     $photo = grooflow_cashback_decode_photo($in['photo'] ?? null, true);
     $colab = grooflow_cashback_colaborador_for_user($pdo, $userId);
     $alerts = $validated['alerts'];
-    if (!$colab['linked']) {
-        $alerts[] = 'Usuario sin colaborador Buk vinculado.';
-    }
+    // Buk es opcional: si hay ficha se usa documento/sede; si no, se registra igual con el usuario.
     $data = $validated['data'];
     $account = grooflow_cashback_require_provider($pdo, $settings, $data);
     if ($account === null) {
@@ -749,6 +776,7 @@ function grooflow_cashback_create(PDO $pdo, array $in): array
 function grooflow_cashback_update_own(PDO $pdo, int $id, array $in): array
 {
     grooflow_cashback_ensure_schema($pdo);
+    grooflow_cashback_require_action($pdo, 'agregar');
     $settings = grooflow_cashback_get_settings($pdo);
     $user = api_current_user() ?? [];
     $userId = (int) ($user['id'] ?? 0);
@@ -768,9 +796,6 @@ function grooflow_cashback_update_own(PDO $pdo, int $id, array $in): array
         }
         if (!in_array($row['estado'], ['en_revision', 'observada'], true)) {
             throw new InvalidArgumentException('Solo se pueden corregir facturas en revisión u observadas.');
-        }
-        if ((int) ($row['colaborador_buk_id'] ?? 0) === 0) {
-            $alerts[] = 'Usuario sin colaborador Buk vinculado.';
         }
         grooflow_cashback_assert_unique($pdo, $data, $photo['hash'] ?? null, $id);
         $pdo->prepare('
@@ -988,18 +1013,20 @@ function grooflow_cashback_balances(PDO $pdo): array
     }
     $settings = grooflow_cashback_get_settings($pdo);
     $rows = $pdo->query("
-        SELECT usuario_id,
-               MAX(usuario_nombre) AS usuario_nombre,
-               MAX(colaborador_doc) AS colaborador_doc,
-               MAX(sede) AS sede,
-               MAX(colaborador_buk_id) AS colaborador_buk_id,
-               SUM(CASE WHEN estado = 'aprobada' THEN cashback_monto ELSE 0 END) AS acumulado,
-               SUM(CASE WHEN estado = 'aprobada' THEN igv ELSE 0 END) AS igv_acumulado,
-               SUM(CASE WHEN estado = 'aprobada' THEN 1 ELSE 0 END) AS aprobadas,
-               SUM(CASE WHEN estado IN ('en_revision', 'observada') THEN 1 ELSE 0 END) AS pendientes,
-               SUM(CASE WHEN estado = 'liquidada' THEN cashback_monto ELSE 0 END) AS liquidado
-        FROM grooflow_cashback_facturas
-        GROUP BY usuario_id
+        SELECT f.usuario_id,
+               MAX(f.usuario_nombre) AS usuario_nombre,
+               MAX(f.colaborador_doc) AS colaborador_doc,
+               MAX(f.sede) AS sede,
+               MAX(f.colaborador_buk_id) AS colaborador_buk_id,
+               SUM(CASE WHEN f.estado = 'aprobada' THEN f.cashback_monto ELSE 0 END) AS acumulado,
+               SUM(CASE WHEN f.estado = 'aprobada' THEN f.igv ELSE 0 END) AS igv_acumulado,
+               SUM(CASE WHEN f.estado = 'aprobada' THEN 1 ELSE 0 END) AS aprobadas,
+               SUM(CASE WHEN f.estado IN ('en_revision', 'observada') THEN 1 ELSE 0 END) AS pendientes,
+               SUM(CASE WHEN f.estado = 'liquidada' AND l.estado = 'pagada' THEN f.cashback_monto ELSE 0 END) AS liquidado,
+               SUM(CASE WHEN f.estado = 'liquidada' AND l.estado = 'generada' THEN f.cashback_monto ELSE 0 END) AS en_liquidacion
+        FROM grooflow_cashback_facturas f
+        LEFT JOIN grooflow_cashback_liquidaciones l ON l.id = f.liquidacion_id
+        GROUP BY f.usuario_id
         ORDER BY acumulado DESC
     ")->fetchAll(PDO::FETCH_ASSOC);
     $threshold = (float) $settings['releaseThreshold'];
@@ -1016,7 +1043,8 @@ function grooflow_cashback_balances(PDO $pdo): array
             'igvAcumulado' => round((float) $r['igv_acumulado'], 2),
             'aprobadas' => (int) $r['aprobadas'],
             'pendientes' => (int) $r['pendientes'],
-            'liquidado' => round((float) $r['liquidado'], 2),
+            'liquidado' => round((float) ($r['liquidado'] ?? 0), 2),
+            'enLiquidacion' => round((float) ($r['en_liquidacion'] ?? 0), 2),
             'faltante' => max(0, round($threshold - $acum, 2)),
             'liberable' => $acum > 0 && $acum >= $threshold,
         ];
@@ -1111,7 +1139,8 @@ function grooflow_cashback_create_liquidation(PDO $pdo, array $in): array
             $byUser[$uid]['monto'] += (float) $r['cashback_monto'];
         }
         $threshold = (float) $settings['releaseThreshold'];
-        $rate = $settings['payoutTreatment'] === 'remuneracion' ? (float) $settings['essaludRate'] / 100 : 0.0;
+        // Solo reembolso: sin EsSalud / planilla. Buk no es requisito.
+        $tratamiento = 'reembolso';
         $lines = [];
         $ids = [];
         foreach ($byUser as $line) {
@@ -1121,7 +1150,7 @@ function grooflow_cashback_create_liquidation(PDO $pdo, array $in): array
             }
             $line['igv'] = round($line['igv'], 2);
             $line['total'] = round($line['total'], 2);
-            $line['essalud'] = round($line['monto'] * $rate, 2);
+            $line['essalud'] = 0.0;
             $ids = array_merge($ids, $line['facturaIds']);
             $lines[] = $line;
         }
@@ -1135,8 +1164,8 @@ function grooflow_cashback_create_liquidation(PDO $pdo, array $in): array
                  lineas, creado_por, creado_por_nombre, nota)
             VALUES (?, \'generada\', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ')->execute([
-            $periodo, $settings['payoutTreatment'], count($lines), count($ids), $sum('igv'), $sum('monto'),
-            $sum('essalud'), grooflow_json_encode($lines), (int) ($user['id'] ?? 0) ?: null,
+            $periodo, $tratamiento, count($lines), count($ids), $sum('igv'), $sum('monto'),
+            0.0, grooflow_json_encode($lines), (int) ($user['id'] ?? 0) ?: null,
             grooflow_cashback_user_name($user), $note !== '' ? $note : null,
         ]);
         $newId = (int) $pdo->lastInsertId();
@@ -1179,11 +1208,55 @@ function grooflow_cashback_mark_liquidation_paid(PDO $pdo, int $id): array
     return grooflow_cashback_liquidation_to_app((array) $stmt->fetch(PDO::FETCH_ASSOC), true);
 }
 
+/**
+ * Anula una liquidación aún no pagada: las facturas vuelven a «aprobada» y liberables.
+ *
+ * @return array{id: string, anulada: true, facturas: int}
+ */
+function grooflow_cashback_cancel_liquidation(PDO $pdo, int $id): array
+{
+    grooflow_cashback_ensure_schema($pdo);
+    grooflow_cashback_require_action($pdo, 'configurar');
+    $user = api_current_user() ?? [];
+
+    $facturas = grooflow_atomic($pdo, static function () use ($pdo, $id, $user): int {
+        $stmt = $pdo->prepare('SELECT id, estado FROM grooflow_cashback_liquidaciones WHERE id = ? FOR UPDATE');
+        $stmt->execute([$id]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!is_array($row)) {
+            throw new InvalidArgumentException('La liquidación no existe.');
+        }
+        if ((string) $row['estado'] !== 'generada') {
+            throw new InvalidArgumentException('Solo se pueden anular liquidaciones pendientes de pago.');
+        }
+        $upd = $pdo->prepare("
+            UPDATE grooflow_cashback_facturas
+            SET estado = 'aprobada', liquidacion_id = NULL
+            WHERE liquidacion_id = ? AND estado = 'liquidada'
+        ");
+        $upd->execute([$id]);
+        $n = $upd->rowCount();
+        $del = $pdo->prepare("DELETE FROM grooflow_cashback_liquidaciones WHERE id = ? AND estado = 'generada'");
+        $del->execute([$id]);
+        if ($del->rowCount() === 0) {
+            throw new RuntimeException('No se pudo anular la liquidación.');
+        }
+        grooflow_audit_insert($pdo, $user, 'cashback.liquidacion_anulada', [
+            'entity' => 'cashback_liquidacion',
+            'entity_id' => (string) $id,
+            'facturas' => $n,
+        ]);
+        return $n;
+    });
+
+    return ['id' => (string) $id, 'anulada' => true, 'facturas' => $facturas];
+}
+
 /** @return array<string, mixed> */
 function grooflow_cashback_report(PDO $pdo, array $q): array
 {
     grooflow_cashback_ensure_schema($pdo);
-    if (!grooflow_cashback_is_reviewer($pdo)) {
+    if (!grooflow_cashback_can_report($pdo)) {
         throw new RuntimeException('No tienes permiso para ver reportes de Cashback');
     }
     $where = ['1 = 1'];
@@ -1324,6 +1397,10 @@ function grooflow_cashback_dispatch(PDO $pdo, string $path, string $method): boo
     }
     if (preg_match('#^/cashback/liquidations/(\d+)/paid$#', $path, $m) && $method === 'POST') {
         api_json_response(['ok' => true, 'item' => grooflow_cashback_mark_liquidation_paid($pdo, (int) $m[1])]);
+        return true;
+    }
+    if (preg_match('#^/cashback/liquidations/(\d+)/cancel$#', $path, $m) && $method === 'POST') {
+        api_json_response(['ok' => true] + grooflow_cashback_cancel_liquidation($pdo, (int) $m[1]));
         return true;
     }
     if ($path === '/cashback/report' && $method === 'GET') {
