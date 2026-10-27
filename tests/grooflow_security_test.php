@@ -209,10 +209,10 @@ function test_petty_cash_closed_week_blocks_txn_write(): void {
         ['custodianId' => '10', 'weekNumber' => '2026-W10'],
     ];
     $before = [
-        ['id' => 't1', 'custodianId' => '10', 'weekNumber' => '2026-W10', 'amount' => 20, 'status' => 'approved'],
+        ['id' => 't1', 'custodianId' => '10', 'weekNumber' => '2026-W10', 'amount' => 20, 'status' => 'approved', 'date' => '2026-03-05T05:00:00.000Z'],
     ];
     $after = [
-        ['id' => 't1', 'custodianId' => '10', 'weekNumber' => '2026-W10', 'amount' => 99, 'status' => 'approved'],
+        ['id' => 't1', 'custodianId' => '10', 'weekNumber' => '2026-W10', 'amount' => 99, 'status' => 'approved', 'date' => '2026-03-05T05:00:00.000Z'],
     ];
     try {
         grooflow_assert_petty_cash_not_in_closed_week($before, $after, $closures);
@@ -223,7 +223,29 @@ function test_petty_cash_closed_week_blocks_txn_write(): void {
         }
     }
     grooflow_assert_petty_cash_not_in_closed_week($before, $before, $closures);
+
+    // Ruido de fechas (rehidratación FE) no debe bloquear un alta en semana abierta.
+    $withDateNoise = [
+        ['id' => 't1', 'custodianId' => '10', 'weekNumber' => '2026-W10', 'amount' => 20, 'status' => 'approved', 'date' => '2026-03-05T00:00:00.000Z'],
+        ['id' => 't2', 'custodianId' => '10', 'weekNumber' => '2026-W12', 'amount' => 15, 'status' => 'pending_audit', 'date' => '2026-03-20T12:00:00.000Z'],
+    ];
+    grooflow_assert_petty_cash_not_in_closed_week($before, $withDateNoise, $closures);
     echo "✓ Test PASSED: movimientos de semana cerrada no se modifican\n";
+}
+
+function test_petty_cash_agregar_covers_editar_side_effects(): void {
+    $ctx = [
+        'admin' => false,
+        'permissions' => ['Caja Chica' => true],
+        'actions' => ['Caja Chica' => ['agregar' => true, 'ver' => true]],
+    ];
+    if (!grooflow_resource_action_allowed($ctx, 'data:pettyCash', 'agregar')) {
+        throw new RuntimeException('agregar debería estar permitido');
+    }
+    if (!grooflow_resource_action_allowed($ctx, 'data:pettyCash', 'editar')) {
+        throw new RuntimeException('agregar debe cubrir editar al reenviar la lista de caja');
+    }
+    echo "✓ Test PASSED: Caja Chica agregar cubre editar (side-effect de lista)\n";
 }
 
 function test_grooflow_resource_store_multicurrency_validation(): void {
@@ -246,6 +268,7 @@ test_petty_cash_fund_delivery_visible_without_location();
 test_petty_cash_meta_visible_to_auditoria();
 test_petty_cash_meta_reopen_requires_admin();
 test_petty_cash_closed_week_blocks_txn_write();
+test_petty_cash_agregar_covers_editar_side_effects();
 test_fleet_agregar_covers_editar_side_effects();
 test_grooflow_kv_array_tables_excludes_object_datasets();
 test_grooflow_resource_store_multicurrency_validation();

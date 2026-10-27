@@ -326,7 +326,47 @@ function grooflow_assert_petty_cash_meta_write(array $ctx, array $before, array 
 }
 
 /**
+ * Compara campos operativos de un movimiento (ignora ruido de fechas ISO / timezone
+ * al re-serializar desde el navegador).
+ */
+function grooflow_petty_cash_row_materially_equal(array $a, array $b): bool
+{
+    $keys = [
+        'amount', 'amountBI', 'igv', 'igvRate', 'amountExempt', 'status', 'type',
+        'weekNumber', 'custodianId', 'userId', 'category', 'description', 'providerName',
+        'docNumber', 'docSeries', 'voucherNumber', 'receiptNumber', 'receiptType', 'docType',
+        'location', 'area', 'isExtraExpense', 'accountingAccount', 'hasReceiptPhoto',
+        'requester',
+    ];
+    foreach ($keys as $key) {
+        $va = $a[$key] ?? null;
+        $vb = $b[$key] ?? null;
+        if (is_bool($va) || is_bool($vb)) {
+            if ((bool) $va !== (bool) $vb) {
+                return false;
+            }
+            continue;
+        }
+        if (is_numeric($va) && is_numeric($vb)) {
+            if (abs((float) $va - (float) $vb) > 0.009) {
+                return false;
+            }
+            continue;
+        }
+        $sa = is_scalar($va) || $va === null ? trim((string) ($va ?? '')) : json_encode($va);
+        $sb = is_scalar($vb) || $vb === null ? trim((string) ($vb ?? '')) : json_encode($vb);
+        if ($sa !== $sb) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/**
  * Impide modificar movimientos de una semana ya cerrada (hay que revertir el cierre antes).
+ * No usa json_encode completo: las fechas rehidratadas en el FE cambian el ISO y
+ * provocaban falsos positivos que bloqueaban cualquier alta nueva.
  *
  * @param list<array<string, mixed>> $before
  * @param list<array<string, mixed>> $after
@@ -376,7 +416,7 @@ function grooflow_assert_petty_cash_not_in_closed_week(
         $id = (string) $row['id'];
         $afterIds[$id] = true;
         $prev = $byId[$id] ?? null;
-        if (is_array($prev) && json_encode($prev) === json_encode($row)) {
+        if (is_array($prev) && grooflow_petty_cash_row_materially_equal($prev, $row)) {
             continue;
         }
         $cid = trim((string) ($row['custodianId'] ?? ($prev['custodianId'] ?? '')));
@@ -584,9 +624,11 @@ function grooflow_resource_action_allowed(array $ctx, string $key, string $actio
         // Alta operativa (checklist, mant., combustible / movimientos de inventario)
         // siempre actualiza la ficha padre (km, última inspección, estado…). Quien puede
         // «agregar» debe poder completar ese guardado sin tener «editar» de maestro.
+        // Caja chica: al registrar un gasto el FE reenvía toda la lista; el ruido de fechas
+        // marca filas previas como «editar» aunque solo se agregó una.
         if (
             $action === 'editar'
-            && in_array($key, ['data:fleet', 'data:inventory'], true)
+            && in_array($key, ['data:fleet', 'data:inventory', 'data:pettyCash'], true)
             && (($ctx['actions'][$module]['agregar'] ?? false) === true)
         ) {
             return true;
