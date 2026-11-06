@@ -102,7 +102,12 @@ function grooflow_menu_default_icon_color(string $moduloKey): string
         'Auditoría' => 'text-orange-400 group-hover/btn:text-orange-300',
         'Conciliación' => 'text-emerald-400 group-hover/btn:text-emerald-300',
         'Cashback' => 'text-emerald-400 group-hover/btn:text-emerald-300',
+        'Descuentos Clínica' => 'text-teal-400 group-hover/btn:text-teal-300',
+        'Postgrados' => 'text-violet-400 group-hover/btn:text-violet-300',
+        'Extornos' => 'text-rose-400 group-hover/btn:text-rose-300',
+        'Descuentos Nómina' => 'text-amber-400 group-hover/btn:text-amber-300',
         'Directorio Telefónico' => 'text-sky-400 group-hover/btn:text-sky-300',
+        'Banco de Firmas' => 'text-sky-400 group-hover/btn:text-sky-300',
         'Configuración' => 'text-slate-400 group-hover/btn:text-slate-300',
         'Admin Menú GrooFlow' => 'text-cyan-400 group-hover/btn:text-cyan-300',
         'Asignación Menú GrooFlow' => 'text-emerald-400 group-hover/btn:text-emerald-300',
@@ -128,6 +133,9 @@ function grooflow_menu_default_leaves(): array
         ['section' => 'Finanzas', 'label' => 'Centros de Costos', 'ruta' => '/centros-costos', 'modulo_key' => 'Centros de Costos', 'icono' => 'fa-diagram-project'],
         ['section' => 'Finanzas', 'label' => 'Honorarios', 'ruta' => '/honorarios', 'modulo_key' => 'Honorarios', 'icono' => 'fa-file-invoice-dollar'],
         ['section' => 'Finanzas', 'label' => 'Cashback', 'ruta' => '/cashback', 'modulo_key' => 'Cashback', 'icono' => 'fa-hand-holding-dollar'],
+        ['section' => 'Finanzas', 'label' => 'Extornos', 'ruta' => '/extornos', 'modulo_key' => 'Extornos', 'icono' => 'fa-money-bill-transfer'],
+        ['section' => 'Gestión', 'label' => 'Descuentos Clínica', 'ruta' => '/descuentos-clinica', 'modulo_key' => 'Descuentos Clínica', 'icono' => 'fa-percent'],
+        ['section' => 'Gestión', 'label' => 'Postgrados', 'ruta' => '/postgrados', 'modulo_key' => 'Postgrados', 'icono' => 'fa-graduation-cap'],
         ['section' => 'Gestión', 'label' => 'Proveedores', 'ruta' => '/proveedores', 'modulo_key' => 'Proveedores', 'icono' => 'fa-truck'],
         ['section' => 'Gestión', 'label' => 'Contabilidad', 'ruta' => '/contabilidad', 'modulo_key' => 'Contabilidad', 'icono' => 'fa-book'],
         ['section' => 'Gestión', 'label' => 'Compras', 'ruta' => '/solicitudes', 'modulo_key' => 'Compras', 'icono' => 'fa-cart-shopping'],
@@ -140,12 +148,14 @@ function grooflow_menu_default_leaves(): array
         ['section' => 'Gestión', 'label' => 'Accidentes de Trabajo', 'ruta' => '/accidentes-trabajo', 'modulo_key' => 'Accidentes de Trabajo', 'icono' => 'fa-hard-hat'],
         ['section' => 'Gestión', 'label' => 'Entrega de Uniformes', 'ruta' => '/entrega-uniformes', 'modulo_key' => 'Entrega de Uniformes', 'icono' => 'fa-shirt'],
         ['section' => 'Gestión', 'label' => 'Marketing Eventos', 'ruta' => '/marketing-eventos', 'modulo_key' => 'Marketing Eventos', 'icono' => 'fa-calendar-check'],
+        ['section' => 'Recursos Humanos', 'label' => 'Descuentos de nómina', 'ruta' => '/descuentos-nomina', 'modulo_key' => 'Descuentos Nómina', 'icono' => 'fa-calendar-check'],
         ['section' => 'Recursos Humanos', 'label' => 'Colaboradores', 'ruta' => '/recursos-humanos', 'modulo_key' => 'Recursos Humanos', 'icono' => 'fa-users'],
         ['section' => 'Recursos Humanos', 'label' => 'Áreas', 'ruta' => '/catalogo/areas', 'modulo_key' => 'Catálogo Áreas', 'icono' => 'fa-sitemap'],
         ['section' => 'Recursos Humanos', 'label' => 'Puestos', 'ruta' => '/catalogo/puestos', 'modulo_key' => 'Catálogo Puestos', 'icono' => 'fa-briefcase'],
         ['section' => 'Recursos Humanos', 'label' => 'Turnos (catálogo)', 'ruta' => '/catalogo/turnos', 'modulo_key' => 'Catálogo Turnos', 'icono' => 'fa-clock'],
         ['section' => 'Recursos Humanos', 'label' => 'Directorio telefónico', 'ruta' => '/directorio-telefonico', 'modulo_key' => 'Directorio Telefónico', 'icono' => 'fa-phone'],
         ['section' => 'Gestión', 'label' => 'Conciliación', 'ruta' => '/conciliacion', 'modulo_key' => 'Conciliación', 'icono' => 'fa-scale-balanced'],
+        ['section' => 'Administración', 'label' => 'Banco de firmas', 'ruta' => '/banco-firmas', 'modulo_key' => 'Banco de Firmas', 'icono' => 'fa-file-signature'],
         ['section' => 'Administración', 'label' => 'Configuración', 'ruta' => '/configuracion', 'modulo_key' => 'Configuración', 'icono' => 'fa-sliders'],
         ['section' => 'Administración', 'label' => 'Configuración de menú', 'ruta' => '/config/menu', 'modulo_key' => 'Admin Menú GrooFlow', 'icono' => 'fa-list-tree'],
         ['section' => 'Administración', 'label' => 'Asignación de menú', 'ruta' => '/config/asignacion-menu', 'modulo_key' => 'Asignación Menú GrooFlow', 'icono' => 'fa-table-cells'],
@@ -240,6 +250,144 @@ function grooflow_menu_sync_catalog(PDO $pdo): void
     }
 
     grooflow_menu_assign_full_access_niveles($pdo);
+    grooflow_menu_grant_nomina_descuentos($pdo);
+    grooflow_menu_grant_banco_firmas($pdo);
+}
+
+function grooflow_menu_grant_nomina_descuentos(PDO $pdo): void
+{
+    if (!grooflow_nivel_menu_table_exists($pdo)) {
+        return;
+    }
+    grooflow_menu_permissions_ensure_schema($pdo);
+    $menuId = (int) $pdo->query("SELECT id FROM grooflow_menu_opciones WHERE modulo_key = 'Descuentos Nómina' LIMIT 1")->fetchColumn();
+    if ($menuId <= 0) {
+        return;
+    }
+    $full = $pdo->query("
+        SELECT DISTINCT nm.nivel_id
+        FROM grooflow_nivel_menu nm
+        JOIN grooflow_menu_opciones m ON m.id = nm.menu_id
+        WHERE nm.estado = 'activo' AND (
+            (m.modulo_key = 'Extornos' AND nm.permiso_configurar = 1)
+            OR (m.modulo_key = 'Auditoría' AND nm.permiso_ver = 1)
+            OR nm.nivel_id IN (1, 2)
+        )
+    ")->fetchAll(PDO::FETCH_COLUMN) ?: [];
+    $operate = $pdo->query("
+        SELECT DISTINCT nm.nivel_id
+        FROM grooflow_nivel_menu nm
+        JOIN grooflow_menu_opciones m ON m.id = nm.menu_id
+        WHERE nm.estado = 'activo' AND m.modulo_key = 'Recursos Humanos' AND nm.permiso_editar = 1
+    ")->fetchAll(PDO::FETCH_COLUMN) ?: [];
+    $insert = $pdo->prepare('
+        INSERT INTO grooflow_nivel_menu (
+            nivel_id, menu_id, permiso_ver, permiso_agregar, permiso_editar, permiso_eliminar, permiso_exportar, permiso_configurar, estado
+        ) VALUES (?, ?, 1, ?, ?, ?, 1, ?, \'activo\')
+        ON DUPLICATE KEY UPDATE estado = \'activo\'
+    ');
+    $raise = $pdo->prepare('
+        UPDATE grooflow_nivel_menu
+        SET permiso_ver = 1,
+            permiso_agregar = GREATEST(permiso_agregar, ?),
+            permiso_editar = GREATEST(permiso_editar, ?),
+            permiso_eliminar = GREATEST(permiso_eliminar, ?),
+            permiso_exportar = 1,
+            permiso_configurar = GREATEST(permiso_configurar, ?),
+            estado = \'activo\'
+        WHERE nivel_id = ? AND menu_id = ?
+    ');
+    $apply = static function (int $nivelId, int $agregar, int $editar, int $eliminar, int $configurar) use ($insert, $raise, $menuId): void {
+        if ($nivelId <= 0) {
+            return;
+        }
+        $insert->execute([$nivelId, $menuId, $agregar, $editar, $eliminar, $configurar]);
+        $raise->execute([$agregar, $editar, $eliminar, $configurar, $nivelId, $menuId]);
+    };
+    $seen = [];
+    foreach (array_map('intval', $full) as $nivelId) {
+        if (isset($seen[$nivelId])) {
+            continue;
+        }
+        $seen[$nivelId] = true;
+        $apply($nivelId, 1, 1, 1, 1);
+    }
+    foreach (array_map('intval', $operate) as $nivelId) {
+        if (isset($seen[$nivelId])) {
+            continue;
+        }
+        $seen[$nivelId] = true;
+        $apply($nivelId, 0, 1, 0, 0);
+    }
+}
+
+function grooflow_menu_grant_banco_firmas(PDO $pdo): void
+{
+    if (!grooflow_nivel_menu_table_exists($pdo)) {
+        return;
+    }
+    grooflow_menu_permissions_ensure_schema($pdo);
+    $menuId = (int) $pdo->query("SELECT id FROM grooflow_menu_opciones WHERE modulo_key = 'Banco de Firmas' LIMIT 1")->fetchColumn();
+    if ($menuId <= 0) {
+        return;
+    }
+    $full = $pdo->query("
+        SELECT DISTINCT nm.nivel_id
+        FROM grooflow_nivel_menu nm
+        JOIN grooflow_menu_opciones m ON m.id = nm.menu_id
+        WHERE nm.estado = 'activo' AND (
+            nm.nivel_id IN (1, 2)
+            OR (m.modulo_key = 'Auditoría' AND nm.permiso_ver = 1)
+            OR (m.modulo_key = 'Extornos' AND nm.permiso_configurar = 1)
+        )
+    ")->fetchAll(PDO::FETCH_COLUMN) ?: [];
+    $operate = $pdo->query("
+        SELECT DISTINCT nm.nivel_id
+        FROM grooflow_nivel_menu nm
+        JOIN grooflow_menu_opciones m ON m.id = nm.menu_id
+        WHERE nm.estado = 'activo'
+          AND m.modulo_key = 'Recursos Humanos'
+          AND nm.permiso_ver = 1
+    ")->fetchAll(PDO::FETCH_COLUMN) ?: [];
+    $insert = $pdo->prepare('
+        INSERT INTO grooflow_nivel_menu (
+            nivel_id, menu_id, permiso_ver, permiso_agregar, permiso_editar, permiso_eliminar, permiso_exportar, permiso_configurar, estado
+        ) VALUES (?, ?, 1, ?, ?, ?, 1, ?, \'activo\')
+        ON DUPLICATE KEY UPDATE estado = \'activo\'
+    ');
+    $raise = $pdo->prepare('
+        UPDATE grooflow_nivel_menu
+        SET permiso_ver = 1,
+            permiso_agregar = GREATEST(permiso_agregar, ?),
+            permiso_editar = GREATEST(permiso_editar, ?),
+            permiso_eliminar = GREATEST(permiso_eliminar, ?),
+            permiso_exportar = 1,
+            permiso_configurar = GREATEST(permiso_configurar, ?),
+            estado = \'activo\'
+        WHERE nivel_id = ? AND menu_id = ?
+    ');
+    $apply = static function (int $nivelId, int $agregar, int $editar, int $eliminar, int $configurar) use ($insert, $raise, $menuId): void {
+        if ($nivelId <= 0) {
+            return;
+        }
+        $insert->execute([$nivelId, $menuId, $agregar, $editar, $eliminar, $configurar]);
+        $raise->execute([$agregar, $editar, $eliminar, $configurar, $nivelId, $menuId]);
+    };
+    $seen = [];
+    foreach (array_map('intval', $full) as $nivelId) {
+        if (isset($seen[$nivelId])) {
+            continue;
+        }
+        $seen[$nivelId] = true;
+        $apply($nivelId, 1, 1, 1, 1);
+    }
+    foreach (array_map('intval', $operate) as $nivelId) {
+        if (isset($seen[$nivelId])) {
+            continue;
+        }
+        $seen[$nivelId] = true;
+        $apply($nivelId, 1, 1, 0, 0);
+    }
 }
 
 function grooflow_menu_assign_full_access_niveles(PDO $pdo): void

@@ -31,7 +31,7 @@ function grooflow_menu_actions_for_route(?string $route, ?string $moduloKey = nu
         'Proveedores', 'Productos', 'Compras', 'Gestión Vehicular', 'Gestión de Inventario',
         'Transacciones', 'Caja Chica', 'Honorarios', 'Marketing Eventos',
         'Accidentes de Trabajo', 'Entrega de Uniformes', 'Recursos Humanos',
-        'Asistencia', 'Turnos', 'Cashback', 'Directorio Telefónico',
+        'Asistencia', 'Turnos', 'Cashback', 'Descuentos Clínica', 'Postgrados', 'Extornos', 'Descuentos Nómina', 'Directorio Telefónico', 'Banco de Firmas',
     ];
     if (in_array($mod, $crudModules, true)) {
         $actions = array_merge($actions, ['agregar', 'editar', 'eliminar']);
@@ -40,7 +40,7 @@ function grooflow_menu_actions_for_route(?string $route, ?string $moduloKey = nu
     if (in_array($mod, ['Directorio Telefónico'], true)) {
         $actions[] = 'exportar';
     }
-    if (in_array($mod, ['Accidentes de Trabajo', 'Entrega de Uniformes', 'Asistencia', 'Cashback'], true)) {
+    if (in_array($mod, ['Accidentes de Trabajo', 'Entrega de Uniformes', 'Asistencia', 'Cashback', 'Descuentos Clínica', 'Postgrados', 'Extornos', 'Descuentos Nómina', 'Banco de Firmas'], true)) {
         $actions = array_merge($actions, ['exportar', 'configurar']);
     }
 

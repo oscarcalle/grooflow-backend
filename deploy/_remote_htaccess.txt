@@ -1,0 +1,79 @@
+RewriteEngine On
+
+# MIME explícito para módulos ES
+AddType application/javascript .js .mjs
+AddType text/css .css
+
+<IfModule mod_headers.c>
+  <Files "index.html">
+    Header set Cache-Control "no-cache, no-store, must-revalidate"
+    Header set Pragma "no-cache"
+    Header set Expires "0"
+  </Files>
+</IfModule>
+
+# Panel Cron Manager PHP en /cron (antes de bloquear la carpeta cron/)
+RewriteRule ^cron/?$ public/index.php [L]
+RewriteRule ^cron/(.+)$ public/$1 [L]
+
+# Bloquear archivos y carpetas sensibles (ruta /cron ya atendida arriba)
+RewriteRule ^\.env$ - [F,L]
+RewriteRule ^config\.php$ - [F,L]
+RewriteRule ^(lib|cron|storage|deploy|frontend|apis_a_mejorar|ejemplo_usuarios)(/|$) - [F,L]
+RewriteRule ^backend/(?!public/) - [F,L]
+RewriteRule ^grooflow-backend/ - [F,L]
+RewriteRule ^database.*\.sql$ - [F,L]
+RewriteRule ^runner\.php$ - [F,L]
+RewriteRule ^functions\.php$ - [F,L]
+
+# API REST (Angular → /api/...)
+RewriteCond %{HTTP:Authorization} .
+RewriteRule ^api/ - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+RewriteRule ^api/(.*)$ api/index.php [QSA,L]
+
+# Panel admin legacy → /public/
+RewriteRule ^admin/?(.*)$ public/$1 [L]
+
+# --- Frontend Angular (assets en /assets/) ---
+
+# Compatibilidad: deploys viejos pedían chunks en la raíz
+RewriteRule ^(chunk-[^/]+\.js)$ /assets/$1 [L,NC]
+RewriteRule ^(main-[^/]+\.js)$ /assets/$1 [L,NC]
+RewriteRule ^(polyfills-[^/]+\.js)$ /assets/$1 [L,NC]
+RewriteRule ^(scripts-[^/]+\.js)$ /assets/$1 [L,NC]
+RewriteRule ^(styles-[^/]+\.css)$ /assets/$1 [L,NC]
+RewriteRule ^vendor/(.+)$ /assets/vendor/$1 [L,NC]
+RewriteRule ^favicon\.ico$ /assets/favicon.ico [L,NC]
+RewriteRule ^images/(.+)$ /assets/images/$1 [L,NC]
+RewriteRule ^maps/(.+)$ /assets/maps/$1 [L,NC]
+
+# Rutas SPA mal resueltas (/dashboard/chunk-*.js → /assets/chunk-*.js)
+RewriteRule ^.+/((?:chunk|main|polyfills|scripts|styles)-[^/]+\.(?:js|css))$ /assets/$1 [L,NC]
+RewriteRule ^.+/vendor/(.+)$ /assets/vendor/$1 [L,NC]
+
+# Carpeta de assets: no aplicar fallback SPA
+RewriteRule ^assets/ - [L]
+
+# Flyers oficiales (Angular public/flyers → /assets/flyers)
+RewriteRule ^flyers/(.+)$ /assets/flyers/$1 [L]
+RewriteRule ^uploads/campaigns/flyers/(.+)$ /assets/flyers/$1 [L]
+RewriteRule ^backend/public/uploads/campaigns/flyers/(.+)$ /assets/flyers/$1 [L]
+
+# Fotos de perfil / portadas / campañas → backend/public/uploads
+RewriteRule ^uploads/(.+)$ backend/public/uploads/$1 [L]
+RewriteRule ^backend/public/uploads/ - [L]
+
+# GrooFlow SPA + API (carpeta física /grooflow) — no caer al index Angular
+RewriteRule ^grooflow(?:/|$) - [L]
+
+# Archivos y directorios existentes
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+# JS/CSS/imágenes inexistentes → 404 real (nunca index.html; evita MIME text/html)
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteRule \.(js|mjs|css|map|jpe?g|png|gif|webp|svg|ico)$ - [R=404,L,NC]
+
+# SPA Angular: solo rutas de aplicación
+RewriteRule ^ index.html [L]

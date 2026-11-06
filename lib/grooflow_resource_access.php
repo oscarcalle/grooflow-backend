@@ -24,7 +24,9 @@ function grooflow_resource_modules(string $key, bool $write = false): array
         'settings:entrega-uniformes' => ['Entrega de Uniformes'],
         'data:treasuryUsdBalance', 'data:treasuryInvoices', 'data:treasuryBankBalance', 'data:treasuryPaidHistory', 'data:treasurySubscriptions', 'data:treasuryBankMovements' => ['Tesorería'],
         'data:monthlyClosures' => ['Reportes'],
-        'settings:config', 'settings:system', 'settings:theme', 'settings:alertThresholds', 'data:sedes', 'settings:alertReadState' => $write ? ['Configuración'] : ['*'],
+        // Escritura no-admin: solo Contabilidad (bloque accounting). Admin bypasea antes.
+        'settings:system' => $write ? ['Contabilidad'] : ['*'],
+        'settings:config', 'settings:theme', 'settings:alertThresholds', 'data:sedes', 'settings:alertReadState' => $write ? ['Configuración'] : ['*'],
         'maintenance:transactionsClearedAt' => $write ? [] : ['*'],
         'data:users', 'data:roles' => ['Usuarios'],
         default => [],
@@ -452,14 +454,37 @@ function grooflow_resource_allowed(array $ctx, string $key, bool $write = false)
     if (!empty($ctx['admin'])) return true;
     // User/role administration must never be inferred from a menu assignment.
     if (in_array($key, ['data:users', 'data:roles'], true)) return !$write;
-    // Catálogos globales solo admin (salvo Asistencia: gerencia/RRHH configuran sede/staff).
-    if ($write && in_array($key, ['settings:system', 'settings:rrhh', 'data:sedes'], true)) return false;
+    // Catálogos globales solo admin (salvo Asistencia / enlaces contables).
+    if ($write && $key === 'settings:system') {
+        // Contabilidad puede persistir solo el bloque `accounting` (ver grooflow_write_resource).
+        return grooflow_caller_can_write_accounting_settings($ctx);
+    }
+    if ($write && in_array($key, ['settings:rrhh', 'data:sedes'], true)) return false;
     if ($write && $key === 'settings:asistencia') {
         return grooflow_caller_can_write_asistencia_settings($ctx);
     }
     foreach (grooflow_resource_modules($key, $write) as $module) {
         if ($module === '*' || ($ctx['permissions'][$module] ?? false) === true) return true;
     }
+    return false;
+}
+
+/** Contabilidad con alta/edición/config puede guardar enlaces de plan de cuentas. */
+function grooflow_caller_can_write_accounting_settings(array $ctx): bool
+{
+    if (($ctx['permissions']['Contabilidad'] ?? false) !== true) {
+        return false;
+    }
+    $actions = $ctx['actions']['Contabilidad'] ?? null;
+    if (! is_array($actions)) {
+        return true;
+    }
+    foreach (['editar', 'agregar', 'configurar'] as $action) {
+        if (! empty($actions[$action])) {
+            return true;
+        }
+    }
+
     return false;
 }
 
@@ -618,6 +643,19 @@ function grooflow_resource_action_allowed(array $ctx, string $key, string $actio
             $action === 'editar'
             && $key === 'settings:asistencia'
             && (($ctx['actions'][$module]['configurar'] ?? false) === true)
+        ) {
+            return true;
+        }
+        // Contabilidad: configurar/editar enlaces de plan de cuentas en settings:system.
+        if (
+            $action === 'editar'
+            && $key === 'settings:system'
+            && $module === 'Contabilidad'
+            && (
+                ($ctx['actions'][$module]['configurar'] ?? false) === true
+                || ($ctx['actions'][$module]['editar'] ?? false) === true
+                || ($ctx['actions'][$module]['agregar'] ?? false) === true
+            )
         ) {
             return true;
         }

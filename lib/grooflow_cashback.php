@@ -111,7 +111,69 @@ function grooflow_cashback_ensure_schema(PDO $pdo): void
     if (!$pdo->query("SHOW COLUMNS FROM grooflow_cashback_facturas LIKE 'cuenta_contable'")->fetch()) {
         $pdo->exec('ALTER TABLE grooflow_cashback_facturas ADD COLUMN cuenta_contable VARCHAR(30) NULL AFTER centro_costo');
     }
+    if (!$pdo->query("SHOW COLUMNS FROM grooflow_cashback_facturas LIKE 'exonerado'")->fetch()) {
+        $pdo->exec('ALTER TABLE grooflow_cashback_facturas ADD COLUMN exonerado DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER igv');
+    }
+    if (!$pdo->query("SHOW COLUMNS FROM grooflow_cashback_facturas LIKE 'inafecto'")->fetch()) {
+        $pdo->exec('ALTER TABLE grooflow_cashback_facturas ADD COLUMN inafecto DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER exonerado');
+    }
+    if (!$pdo->query("SHOW COLUMNS FROM grooflow_cashback_facturas LIKE 'otros_cargos'")->fetch()) {
+        $pdo->exec('ALTER TABLE grooflow_cashback_facturas ADD COLUMN otros_cargos DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER inafecto');
+    }
+    if (!$pdo->query("SHOW COLUMNS FROM grooflow_cashback_facturas LIKE 'sunat_extras'")->fetch()) {
+        $pdo->exec('ALTER TABLE grooflow_cashback_facturas ADD COLUMN sunat_extras JSON NULL AFTER otros_cargos');
+    }
     $done = true;
+}
+
+/** @return array{descuentoGlobal: float, ventaGratuita: float, ventaExportacion: float, otrosTributos: float, isc: float, icbper: float} */
+function grooflow_cashback_normalize_sunat_extras(mixed $raw): array
+{
+    $src = [];
+    if (is_string($raw) && $raw !== '') {
+        $decoded = grooflow_json_decode($raw);
+        $src = is_array($decoded) ? $decoded : [];
+    } elseif (is_array($raw)) {
+        $src = $raw;
+    }
+    $num = static function (mixed $v): float {
+        $m = grooflow_cashback_money($v);
+        return $m === null ? 0.0 : max(0.0, $m);
+    };
+
+    return [
+        'descuentoGlobal' => $num($src['descuentoGlobal'] ?? 0),
+        'ventaGratuita' => $num($src['ventaGratuita'] ?? 0),
+        'ventaExportacion' => $num($src['ventaExportacion'] ?? 0),
+        'otrosTributos' => $num($src['otrosTributos'] ?? 0),
+        'isc' => $num($src['isc'] ?? 0),
+        'icbper' => $num($src['icbper'] ?? 0),
+    ];
+}
+
+/**
+ * Sumatoria alineada al resumen SUNAT.
+ *
+ * @param array{base: float, igv: float, exonerado: float, inafecto: float, otrosCargos: float, sunatExtras: array<string, float>} $parts
+ */
+function grooflow_cashback_sum_sunat_parts(array $parts): float
+{
+    $x = $parts['sunatExtras'];
+
+    return round(
+        (float) $parts['base']
+        + (float) $parts['igv']
+        + (float) $parts['exonerado']
+        + (float) $parts['inafecto']
+        + (float) $parts['otrosCargos']
+        + (float) ($x['ventaGratuita'] ?? 0)
+        + (float) ($x['ventaExportacion'] ?? 0)
+        + (float) ($x['otrosTributos'] ?? 0)
+        + (float) ($x['isc'] ?? 0)
+        + (float) ($x['icbper'] ?? 0)
+        - (float) ($x['descuentoGlobal'] ?? 0),
+        2
+    );
 }
 
 function grooflow_cashback_config_key(string $value): string
@@ -311,7 +373,9 @@ function grooflow_cashback_get_settings(PDO $pdo): array
     return $settings;
 }
 
-/** @return array<string, mixed> */
+/**
+ * @return array{settings: array, recomputed: int}
+ */
 function grooflow_cashback_save_settings(PDO $pdo, array $input): array
 {
     grooflow_cashback_require_action($pdo, 'configurar');
@@ -321,9 +385,60 @@ function grooflow_cashback_save_settings(PDO $pdo, array $input): array
         INSERT INTO grooflow_cashback_config (id, payload, updated_by) VALUES (1, ?, ?)
         ON DUPLICATE KEY UPDATE payload = VALUES(payload), updated_by = VALUES(updated_by)
     ')->execute([grooflow_json_encode($settings), (int) ($user['id'] ?? 0) ?: null]);
-    grooflow_audit_insert($pdo, $user, 'cashback.settings', ['entity' => 'cashback_config', 'settings' => $settings]);
+    $recomputed = grooflow_cashback_recompute_open_approvals($pdo, $settings);
+    grooflow_audit_insert($pdo, $user, 'cashback.settings', [
+        'entity' => 'cashback_config',
+        'settings' => $settings,
+        'recomputedApprovals' => $recomputed,
+    ]);
 
-    return grooflow_cashback_get_settings($pdo);
+    return [
+        'settings' => grooflow_cashback_get_settings($pdo),
+        'recomputed' => $recomputed,
+    ];
+}
+
+/**
+ * Recalcula cashback_monto de facturas aprobadas aún no liquidadas con la regla vigente.
+ * No toca liquidadas/pagadas (el lote ya congeló montos).
+ */
+function grooflow_cashback_recompute_open_approvals(PDO $pdo, array $settings): int
+{
+    grooflow_cashback_ensure_schema($pdo);
+    $stmt = $pdo->query("
+        SELECT id, igv, total
+        FROM grooflow_cashback_facturas
+        WHERE estado = 'aprobada' AND liquidacion_id IS NULL
+    ");
+    $rows = $stmt ? $stmt->fetchAll(PDO::FETCH_ASSOC) : [];
+    if ($rows === []) {
+        return 0;
+    }
+    $snapshot = grooflow_cashback_rule_snapshot($settings);
+    $upd = $pdo->prepare('
+        UPDATE grooflow_cashback_facturas
+        SET cashback_monto = ?, regla_snapshot = ?
+        WHERE id = ? AND estado = \'aprobada\' AND liquidacion_id IS NULL
+    ');
+    $n = 0;
+    foreach ($rows as $r) {
+        $amount = grooflow_cashback_compute($settings, (float) $r['igv'], (float) $r['total']);
+        $upd->execute([$amount, $snapshot, (int) $r['id']]);
+        $n++;
+    }
+
+    return $n;
+}
+
+function grooflow_cashback_rule_snapshot(array $settings): string
+{
+    return grooflow_json_encode([
+        'calcMode' => $settings['calcMode'] ?? 'pct_igv',
+        'pctIgv' => $settings['pctIgv'] ?? 0,
+        'pctTotal' => $settings['pctTotal'] ?? 0,
+        'flatAmount' => $settings['flatAmount'] ?? 0,
+        'capAtIgv' => !empty($settings['capAtIgv']),
+    ]);
 }
 
 function grooflow_cashback_can(PDO $pdo, string $action): bool
@@ -463,26 +578,58 @@ function grooflow_cashback_validate_input(array $settings, array $in): array
     $total = grooflow_cashback_money($in['total'] ?? null);
     $igv = grooflow_cashback_money($in['igv'] ?? null);
     $base = grooflow_cashback_money($in['base'] ?? null);
+    $exoneradoRaw = grooflow_cashback_money($in['exonerado'] ?? null);
+    $inafectoRaw = grooflow_cashback_money($in['inafecto'] ?? null);
+    $otrosCargosRaw = grooflow_cashback_money($in['otrosCargos'] ?? null);
+    $exonerado = $exoneradoRaw === null ? 0.0 : max(0.0, $exoneradoRaw);
+    $inafecto = $inafectoRaw === null ? 0.0 : max(0.0, $inafectoRaw);
+    $otrosCargos = $otrosCargosRaw === null ? 0.0 : max(0.0, $otrosCargosRaw);
+    $sunatExtras = grooflow_cashback_normalize_sunat_extras($in['sunatExtras'] ?? []);
+    foreach (['exonerado' => $exoneradoRaw, 'inafecto' => $inafectoRaw, 'otrosCargos' => $otrosCargosRaw] as $field => $raw) {
+        if ($raw !== null && $raw < 0) {
+            $errors[$field] = 'No puede ser negativo.';
+        }
+    }
     if ($total === null || $total <= 0) {
         $errors['total'] = 'Ingresa el importe total.';
     }
     if ($igv === null || $igv <= 0) {
-        $errors['igv'] = 'La factura debe tener IGV (las exoneradas o inafectas no generan crédito fiscal).';
+        $errors['igv'] = 'La factura debe tener IGV (solo el IGV genera crédito fiscal / cashback).';
     }
     if ($total !== null && $igv !== null && $igv > 0 && $total > 0) {
         if ($igv >= $total) {
             $errors['igv'] = 'El IGV no puede ser mayor o igual al total.';
         } else {
-            if ($base === null || $base <= 0) {
-                $base = round($total - $igv, 2);
+            $additives = round(
+                $exonerado + $inafecto + $otrosCargos
+                + $sunatExtras['ventaGratuita'] + $sunatExtras['ventaExportacion']
+                + $sunatExtras['otrosTributos'] + $sunatExtras['isc'] + $sunatExtras['icbper'],
+                2
+            );
+            if ($base === null || $base < 0) {
+                $base = round(max(0, $total - $igv - $additives + $sunatExtras['descuentoGlobal']), 2);
             }
-            $rate = $base > 0 ? $igv / $base : 0;
-            $okRate = ($rate >= 0.17 && $rate <= 0.19) || ($rate >= 0.095 && $rate <= 0.105);
-            if (!$okRate) {
-                $alerts[] = sprintf('El IGV no corresponde al 18%% de la base (%.1f%%).', $rate * 100);
+            $near18 = abs($igv - round($base * 0.18, 2)) <= 0.06;
+            $near105 = abs($igv - round($base * 0.105, 2)) <= 0.06;
+            if (!($near18 || $near105)) {
+                $rate = $base > 0 ? $igv / $base : 0;
+                $alerts[] = sprintf('El IGV no corresponde al 18%% ni 10.5%% de la base (%.1f%%).', $rate * 100);
             }
-            if (abs(($base + $igv) - $total) > 0.1) {
-                $alerts[] = 'Base + IGV no coincide con el total (puede incluir ICBPER, propina u otros cargos).';
+            $parts = [
+                'base' => $base,
+                'igv' => $igv,
+                'exonerado' => $exonerado,
+                'inafecto' => $inafecto,
+                'otrosCargos' => $otrosCargos,
+                'sunatExtras' => $sunatExtras,
+            ];
+            $suma = grooflow_cashback_sum_sunat_parts($parts);
+            if (abs($suma - $total) > 0.1) {
+                $errors['total'] = sprintf(
+                    'La sumatoria SUNAT (%.2f) debe coincidir con el importe total (%.2f).',
+                    $suma,
+                    $total
+                );
             }
         }
     }
@@ -548,6 +695,10 @@ function grooflow_cashback_validate_input(array $settings, array $in): array
             'periodo' => substr($fecha, 0, 7),
             'base' => $base,
             'igv' => $igv,
+            'exonerado' => $exonerado,
+            'inafecto' => $inafecto,
+            'otros_cargos' => $otrosCargos,
+            'sunat_extras' => $sunatExtras,
             'total' => $total,
             'comprador_ruc' => $compradorRuc !== '' ? $compradorRuc : null,
             'categoria' => $categoria,
@@ -604,6 +755,10 @@ function grooflow_cashback_row_to_app(array $row): array
         'periodo' => (string) $row['periodo'],
         'base' => (float) $row['base'],
         'igv' => (float) $row['igv'],
+        'exonerado' => (float) ($row['exonerado'] ?? 0),
+        'inafecto' => (float) ($row['inafecto'] ?? 0),
+        'otrosCargos' => (float) ($row['otros_cargos'] ?? 0),
+        'sunatExtras' => grooflow_cashback_normalize_sunat_extras($row['sunat_extras'] ?? null),
         'total' => (float) $row['total'],
         'compradorRuc' => $row['comprador_ruc'],
         'categoria' => (string) $row['categoria'],
@@ -721,7 +876,8 @@ function grooflow_cashback_me(PDO $pdo): array
         'settings' => $settings,
         'capabilities' => [
             'submit' => grooflow_cashback_can($pdo, 'agregar'),
-            'review' => grooflow_cashback_can($pdo, 'editar'),
+            // Misma regla que la bandeja: editar o configurar (admin también pasa can()).
+            'review' => grooflow_cashback_is_reviewer($pdo),
             'export' => grooflow_cashback_can($pdo, 'exportar'),
             'configure' => grooflow_cashback_can($pdo, 'configurar'),
         ],
@@ -753,14 +909,15 @@ function grooflow_cashback_create(PDO $pdo, array $in): array
             INSERT INTO grooflow_cashback_facturas
                 (usuario_id, usuario_nombre, colaborador_buk_id, colaborador_doc, sede,
                  emisor_ruc, emisor_nombre, emisor_estado, emisor_condicion, tipo_doc, serie, numero,
-                 fecha_emision, periodo, base, igv, total, comprador_ruc, categoria, motivo, centro_costo,
+                 fecha_emision, periodo, base, igv, exonerado, inafecto, otros_cargos, sunat_extras, total, comprador_ruc, categoria, motivo, centro_costo,
                  cuenta_contable, qr_raw, photo_hash, alertas, estado)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \'en_revision\')
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \'en_revision\')
         ')->execute([
             $userId, grooflow_cashback_user_name($user), $colab['bukId'], $colab['documento'], $colab['sede'],
             $data['emisor_ruc'], $data['emisor_nombre'], $data['emisor_estado'], $data['emisor_condicion'],
             $data['tipo_doc'], $data['serie'], $data['numero'], $data['fecha_emision'], $data['periodo'],
-            $data['base'], $data['igv'], $data['total'], $data['comprador_ruc'], $data['categoria'],
+            $data['base'], $data['igv'], $data['exonerado'], $data['inafecto'], $data['otros_cargos'],
+            grooflow_json_encode($data['sunat_extras']), $data['total'], $data['comprador_ruc'], $data['categoria'],
             $data['motivo'], $data['centro_costo'], $account, $data['qr_raw'], $photo['hash'], grooflow_json_encode($alerts),
         ]);
         $newId = (int) $pdo->lastInsertId();
@@ -801,13 +958,15 @@ function grooflow_cashback_update_own(PDO $pdo, int $id, array $in): array
         $pdo->prepare('
             UPDATE grooflow_cashback_facturas SET
                 emisor_ruc = ?, emisor_nombre = ?, emisor_estado = ?, emisor_condicion = ?, serie = ?, numero = ?,
-                fecha_emision = ?, periodo = ?, base = ?, igv = ?, total = ?, comprador_ruc = ?, categoria = ?,
+                fecha_emision = ?, periodo = ?, base = ?, igv = ?, exonerado = ?, inafecto = ?, otros_cargos = ?, sunat_extras = ?,
+                total = ?, comprador_ruc = ?, categoria = ?,
                 motivo = ?, centro_costo = ?, cuenta_contable = ?, qr_raw = COALESCE(?, qr_raw), photo_hash = COALESCE(?, photo_hash),
                 alertas = ?, estado = \'en_revision\'
             WHERE id = ?
         ')->execute([
             $data['emisor_ruc'], $data['emisor_nombre'], $data['emisor_estado'], $data['emisor_condicion'],
             $data['serie'], $data['numero'], $data['fecha_emision'], $data['periodo'], $data['base'], $data['igv'],
+            $data['exonerado'], $data['inafecto'], $data['otros_cargos'], grooflow_json_encode($data['sunat_extras']),
             $data['total'], $data['comprador_ruc'], $data['categoria'], $data['motivo'], $data['centro_costo'],
             $account, $data['qr_raw'], $photo['hash'] ?? null, grooflow_json_encode($alerts), $id,
         ]);
@@ -823,21 +982,141 @@ function grooflow_cashback_update_own(PDO $pdo, int $id, array $in): array
 function grooflow_cashback_delete_own(PDO $pdo, int $id): void
 {
     grooflow_cashback_ensure_schema($pdo);
-    $userId = (int) ((api_current_user() ?? [])['id'] ?? 0);
+    $user = api_current_user() ?? [];
+    $userId = (int) ($user['id'] ?? 0);
     // El contexto de permisos puede ejecutar DDL (sync de menú): resolverlo antes de abrir la transacción.
     $canDeleteAny = grooflow_cashback_can($pdo, 'eliminar');
-    grooflow_atomic($pdo, static function () use ($pdo, $id, $userId, $canDeleteAny): void {
+    $canReview = grooflow_cashback_is_reviewer($pdo);
+    grooflow_atomic($pdo, static function () use ($pdo, $id, $userId, $user, $canDeleteAny, $canReview): void {
         $row = grooflow_cashback_find($pdo, $id, true);
         $owner = (int) $row['usuario_id'] === $userId;
-        if (!$owner && !$canDeleteAny) {
-            throw new RuntimeException('No tienes permiso para eliminar esta factura');
+        $estado = (string) $row['estado'];
+        if ($estado === 'liquidada') {
+            throw new InvalidArgumentException('No se puede eliminar una factura liquidada. Anula o ajusta la liquidación primero.');
         }
-        if (!in_array($row['estado'], ['en_revision', 'observada', 'rechazada'], true)) {
-            throw new InvalidArgumentException('No se puede eliminar una factura aprobada o liquidada.');
+        $draftStates = ['en_revision', 'observada', 'rechazada'];
+        $allowed =
+            ($owner && in_array($estado, $draftStates, true))
+            || ($canReview && in_array($estado, array_merge($draftStates, ['aprobada']), true))
+            || ($canDeleteAny && in_array($estado, $draftStates, true));
+        if (!$allowed) {
+            if ($estado === 'aprobada') {
+                throw new RuntimeException('Solo un revisor o administrador puede eliminar una factura aprobada.');
+            }
+            throw new RuntimeException('No tienes permiso para eliminar esta factura');
         }
         $pdo->prepare('DELETE FROM grooflow_cashback_fotos WHERE factura_id = ?')->execute([$id]);
         $pdo->prepare('DELETE FROM grooflow_cashback_facturas WHERE id = ?')->execute([$id]);
+        grooflow_audit_insert($pdo, $user, 'cashback.delete', [
+            'entity' => 'cashback_factura',
+            'entity_id' => (string) $id,
+            'estado' => $estado,
+            'serie' => $row['serie'] ?? null,
+            'numero' => $row['numero'] ?? null,
+            'emisor_ruc' => $row['emisor_ruc'] ?? null,
+        ]);
     });
+}
+
+/**
+ * Aplica correcciones de montos enviadas por el revisor.
+ *
+ * @param array<string, mixed> $in
+ * @param array<string, float> $sunatExtras
+ * @return array{igv: float, total: float, base: float, exonerado: float, inafecto: float, otrosCargos: float, sunatExtras: array<string, float>}
+ */
+function grooflow_cashback_apply_amount_patch(
+    array $in,
+    float $igv,
+    float $total,
+    float $base,
+    float $exonerado,
+    float $inafecto,
+    float $otrosCargos = 0.0,
+    array $sunatExtras = []
+): array {
+    $sunatExtras = grooflow_cashback_normalize_sunat_extras($sunatExtras);
+    $formIgv = grooflow_cashback_money($in['igv'] ?? null);
+    $formTotal = grooflow_cashback_money($in['total'] ?? null);
+    $formBase = grooflow_cashback_money($in['base'] ?? null);
+    if ($formIgv !== null) {
+        if ($formIgv <= 0) {
+            throw new GrooflowValidation(['igv' => 'El IGV debe ser mayor a 0.']);
+        }
+        $igv = $formIgv;
+    }
+    if ($formTotal !== null) {
+        if ($formTotal <= 0) {
+            throw new GrooflowValidation(['total' => 'El total debe ser mayor a 0.']);
+        }
+        $total = $formTotal;
+    }
+    if ($formBase !== null && $formBase >= 0) {
+        $base = $formBase;
+    }
+    $patchMoney = static function (array $in, string $key, float $current): float {
+        if (!array_key_exists($key, $in)) {
+            return $current;
+        }
+        $v = grooflow_cashback_money($in[$key]);
+        if ($v === null) {
+            return 0.0;
+        }
+        if ($v < 0) {
+            throw new GrooflowValidation([$key => 'No puede ser negativo.']);
+        }
+
+        return $v;
+    };
+    $exonerado = $patchMoney($in, 'exonerado', $exonerado);
+    $inafecto = $patchMoney($in, 'inafecto', $inafecto);
+    $otrosCargos = $patchMoney($in, 'otrosCargos', $otrosCargos);
+    if (array_key_exists('sunatExtras', $in)) {
+        $sunatExtras = grooflow_cashback_normalize_sunat_extras($in['sunatExtras']);
+    }
+    if ($igv >= $total) {
+        throw new GrooflowValidation(['igv' => 'El IGV no puede ser mayor o igual al total.']);
+    }
+    $parts = [
+        'base' => $base,
+        'igv' => $igv,
+        'exonerado' => $exonerado,
+        'inafecto' => $inafecto,
+        'otrosCargos' => $otrosCargos,
+        'sunatExtras' => $sunatExtras,
+    ];
+    $suma = grooflow_cashback_sum_sunat_parts($parts);
+    // Si no enviaron base explícita, recalcular para cuadrar.
+    if ($formBase === null && abs($suma - $total) > 0.1) {
+        $additives = round(
+            $exonerado + $inafecto + $otrosCargos
+            + $sunatExtras['ventaGratuita'] + $sunatExtras['ventaExportacion']
+            + $sunatExtras['otrosTributos'] + $sunatExtras['isc'] + $sunatExtras['icbper'],
+            2
+        );
+        $base = round(max(0, $total - $igv - $additives + $sunatExtras['descuentoGlobal']), 2);
+        $parts['base'] = $base;
+        $suma = grooflow_cashback_sum_sunat_parts($parts);
+    }
+    if (abs($suma - $total) > 0.1) {
+        throw new GrooflowValidation([
+            'total' => sprintf(
+                'La sumatoria SUNAT (%.2f) debe coincidir con el importe total (%.2f).',
+                $suma,
+                $total
+            ),
+        ]);
+    }
+
+    return [
+        'igv' => $igv,
+        'total' => $total,
+        'base' => $base,
+        'exonerado' => $exonerado,
+        'inafecto' => $inafecto,
+        'otrosCargos' => $otrosCargos,
+        'sunatExtras' => $sunatExtras,
+    ];
 }
 
 /** @return array{dataUrl: string, mime: string} */
@@ -906,9 +1185,12 @@ function grooflow_cashback_list(PDO $pdo, array $q): array
 function grooflow_cashback_review(PDO $pdo, int $id, array $in): array
 {
     grooflow_cashback_ensure_schema($pdo);
-    grooflow_cashback_require_action($pdo, 'editar');
+    // Revisor (editar) o quien configura / admin de sistema.
+    if (!grooflow_cashback_is_reviewer($pdo)) {
+        throw new RuntimeException('No tienes permiso para revisar facturas de Cashback');
+    }
     $action = (string) ($in['action'] ?? '');
-    if (!in_array($action, ['approve', 'observe', 'reject', 'reopen'], true)) {
+    if (!in_array($action, ['approve', 'observe', 'reject', 'reopen', 'correct'], true)) {
         throw new InvalidArgumentException('Acción de revisión inválida.');
     }
     $note = mb_substr(trim((string) ($in['note'] ?? '')), 0, 500);
@@ -930,6 +1212,10 @@ function grooflow_cashback_review(PDO $pdo, int $id, array $in): array
             if (!in_array($estado, ['aprobada', 'rechazada', 'observada'], true)) {
                 throw new InvalidArgumentException('Solo se reabren facturas aprobadas (sin liquidar), rechazadas u observadas.');
             }
+        } elseif ($action === 'correct') {
+            if ($estado !== 'aprobada') {
+                throw new InvalidArgumentException('Solo se corrigen montos de facturas aprobadas (aún no liquidadas).');
+            }
         } elseif (!in_array($estado, ['en_revision', 'observada'], true)) {
             throw new InvalidArgumentException('La factura ya fue revisada (' . $estado . ').');
         }
@@ -937,57 +1223,68 @@ function grooflow_cashback_review(PDO $pdo, int $id, array $in): array
         $igv = (float) $row['igv'];
         $total = (float) $row['total'];
         $base = (float) $row['base'];
+        $exonerado = (float) ($row['exonerado'] ?? 0);
+        $inafecto = (float) ($row['inafecto'] ?? 0);
+        $otrosCargos = (float) ($row['otros_cargos'] ?? 0);
+        $sunatExtras = grooflow_cashback_normalize_sunat_extras($row['sunat_extras'] ?? null);
+        $amount = $row['cashback_monto'] !== null ? (float) $row['cashback_monto'] : null;
+        $snapshot = $row['regla_snapshot'] ?? null;
         $globalExpense = grooflow_cashback_global_expense_account($pdo);
         $account = $row['cuenta_contable'] ?? null;
         if ($globalExpense !== null) {
             // Opción A: siempre la cuenta global configurada en Contabilidad.
             $account = $globalExpense;
-        } elseif (array_key_exists('cuentaContable', $in) && in_array($action, ['approve', 'observe'], true)) {
+        } elseif (array_key_exists('cuentaContable', $in) && in_array($action, ['approve', 'observe', 'correct'], true)) {
             $account = grooflow_cashback_clean_account($in['cuentaContable']);
         }
-        if ($action === 'approve') {
-            if ($account === null || $account === '') {
+        if ($action === 'approve' || $action === 'correct') {
+            if ($action === 'approve' && ($account === null || $account === '')) {
                 throw new GrooflowValidation([
                     'cuentaContable' => 'Configura «Cashback: cuenta de gasto (debe)» en Contabilidad → Plan de cuentas, o asigna la cuenta al aprobar.',
                 ]);
             }
-            $fixIgv = grooflow_cashback_money($in['igv'] ?? null);
-            $fixTotal = grooflow_cashback_money($in['total'] ?? null);
-            if ($fixIgv !== null && $fixIgv > 0) {
-                $igv = $fixIgv;
-            }
-            if ($fixTotal !== null && $fixTotal > 0) {
-                $total = $fixTotal;
-            }
-            if ($igv >= $total) {
-                throw new GrooflowValidation(['igv' => 'El IGV no puede ser mayor o igual al total.']);
-            }
-            $base = round($total - $igv, 2);
+            $patched = grooflow_cashback_apply_amount_patch(
+                $in,
+                $igv,
+                $total,
+                $base,
+                $exonerado,
+                $inafecto,
+                $otrosCargos,
+                $sunatExtras
+            );
+            $igv = $patched['igv'];
+            $total = $patched['total'];
+            $base = $patched['base'];
+            $exonerado = $patched['exonerado'];
+            $inafecto = $patched['inafecto'];
+            $otrosCargos = $patched['otrosCargos'];
+            $sunatExtras = $patched['sunatExtras'];
+            $amount = grooflow_cashback_compute($settings, $igv, $total);
+            $snapshot = grooflow_cashback_rule_snapshot($settings);
         }
 
         $next = match ($action) {
-            'approve' => 'aprobada',
+            'approve', 'correct' => 'aprobada',
             'observe' => 'observada',
             'reject' => 'rechazada',
             default => 'en_revision',
         };
-        $amount = $action === 'approve' ? grooflow_cashback_compute($settings, $igv, $total) : null;
-        $snapshot = $action === 'approve' ? grooflow_json_encode([
-            'calcMode' => $settings['calcMode'],
-            'pctIgv' => $settings['pctIgv'],
-            'pctTotal' => $settings['pctTotal'],
-            'flatAmount' => $settings['flatAmount'],
-            'capAtIgv' => $settings['capAtIgv'],
-        ]) : null;
+        if ($action === 'reopen') {
+            $amount = null;
+            $snapshot = null;
+        }
 
         $pdo->prepare('
             UPDATE grooflow_cashback_facturas SET
-                estado = ?, igv = ?, total = ?, base = ?, cashback_monto = ?, regla_snapshot = ?, cuenta_contable = ?,
+                estado = ?, igv = ?, exonerado = ?, inafecto = ?, otros_cargos = ?, sunat_extras = ?,
+                total = ?, base = ?, cashback_monto = ?, regla_snapshot = ?, cuenta_contable = ?,
                 revisor_id = ?, revisor_nombre = ?, revisado_at = NOW(), nota_revision = ?
             WHERE id = ?
         ')->execute([
-            $next, $igv, $total, $base, $amount, $snapshot, $account,
-            $reviewerId, grooflow_cashback_user_name($user), $note !== '' ? $note : null, $id,
+            $next, $igv, $exonerado, $inafecto, $otrosCargos, grooflow_json_encode($sunatExtras),
+            $total, $base, $amount, $snapshot, $account,
+            $reviewerId, grooflow_cashback_user_name($user), $note !== '' ? $note : ($row['nota_revision'] ?? null), $id,
         ]);
         grooflow_audit_insert($pdo, $user, 'cashback.review', [
             'entity' => 'cashback_factura',
@@ -997,6 +1294,11 @@ function grooflow_cashback_review(PDO $pdo, int $id, array $in): array
             'to' => $next,
             'cashback' => $amount,
             'cuenta' => $account,
+            'igv' => $igv,
+            'exonerado' => $exonerado,
+            'inafecto' => $inafecto,
+            'otrosCargos' => $otrosCargos,
+            'total' => $total,
             'note' => $note,
         ]);
     });
@@ -1332,7 +1634,12 @@ function grooflow_cashback_dispatch(PDO $pdo, string $path, string $method): boo
         return true;
     }
     if ($path === '/cashback/settings' && $method === 'PUT') {
-        api_json_response(['ok' => true, 'settings' => grooflow_cashback_save_settings($pdo, api_request_json())]);
+        $saved = grooflow_cashback_save_settings($pdo, api_request_json());
+        api_json_response([
+            'ok' => true,
+            'settings' => $saved['settings'],
+            'recomputed' => $saved['recomputed'],
+        ]);
         return true;
     }
     if ($path === '/cashback/provider' && $method === 'GET') {

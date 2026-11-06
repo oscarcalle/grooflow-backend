@@ -1,0 +1,30 @@
+═══════════════════════════════════════════════════════════════
+  STOP — NO SOBRESCRIBIR ESTE DIRECTORIO (GrooFlow producción)
+═══════════════════════════════════════════════════════════════
+
+Hola Oscar / equipo de desarrollo:
+
+Esta carpeta (`grooflow-backend` y también `grooflow`) es la versión
+PUBLICADA y protegida del sistema GrooFlow.
+
+Si subes archivos por FileZilla, File Manager de Hostinger, u otro SFTP:
+
+  1. Vas a BORRAR módulos nuevos (Postgrados, Descuentos Clínica, etc.).
+  2. Vas a REACTIVAR bugs ya corregidos (toast de “nube”, Contabilidad…).
+  3. El sistema detectará el cambio, intentará RESTAURAR solo y te
+     ENVIARÁ / registrará una alerta automática.
+
+Aunque creas que “no hiciste cambios”, cualquier sincronización de una
+carpeta local antigua (p. ej. backup del 7 de octubre) PISA producción.
+
+Qué hacer si necesitas publicar algo:
+  - Coordina con el administrador del sistema ANTES.
+  - No uses “subir carpeta completa”.
+  - Trabaja en una rama/copia aparte, nunca contra estos paths.
+
+Rutas protegidas:
+  /public_html/grooflow
+  /public_html/grooflow-backend
+
+Gracias.
+═══════════════════════════════════════════════════════════════

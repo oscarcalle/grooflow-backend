@@ -31,6 +31,7 @@ require_once dirname(__DIR__) . '/lib/grooflow_resource_access.php';
 require_once dirname(__DIR__) . '/lib/grooflow_resource_store.php';
 require_once dirname(__DIR__) . '/lib/grooflow_self_service.php';
 require_once dirname(__DIR__) . '/lib/grooflow_finance_operations.php';
+require_once dirname(__DIR__) . '/lib/grooflow_deploy_guard.php';
 
 unset($_GET['token']);
 
@@ -42,6 +43,13 @@ $_SERVER['HTTP_X_GROOMERS_CLIENT'] = 'grooflow';
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(204);
     exit;
+}
+
+// Detecta/restaura sobrescrituras SFTP ajenas (p. ej. deploys viejos) sin bloquear la request.
+try {
+    grooflow_deploy_guard_boot($pdo ?? null);
+} catch (Throwable $e) {
+    error_log('[grooflow] deploy_guard: ' . $e->getMessage());
 }
 
 try {
@@ -102,6 +110,25 @@ function grooflow_dispatch(PDO $pdo): void
 
     if ($path === '/' || $path === '/health') {
         api_json_response(['ok' => true, 'service' => 'grooflow', 'time' => date('c')]);
+
+        return;
+    }
+
+    if ($path === '/deploy-integrity' && $method === 'GET') {
+        // Público liviano: permite ver si producción fue pisada (sin datos sensibles).
+        $status = grooflow_deploy_guard_check_and_heal(true);
+        api_json_response([
+            'ok' => empty($status['drifted']),
+            'drifted' => !empty($status['drifted']),
+            'expected' => $status['expected'] ?? null,
+            'actual' => $status['actual'] ?? null,
+            'restored' => $status['restored'] ?? [],
+            'issues' => array_values(array_filter(
+                (array) ($status['issues'] ?? []),
+                static fn ($x) => $x !== 'throttled'
+            )),
+            'time' => date('c'),
+        ]);
 
         return;
     }
@@ -232,6 +259,36 @@ function grooflow_dispatch(PDO $pdo): void
     if ($path === '/cashback' || str_starts_with($path, '/cashback/')) {
         require_once dirname(__DIR__) . '/lib/grooflow_cashback.php';
         grooflow_cashback_dispatch($pdo, $path, $method);
+
+        return;
+    }
+    if ($path === '/descuentos-clinica' || str_starts_with($path, '/descuentos-clinica/')) {
+        require_once dirname(__DIR__) . '/lib/grooflow_descuentos_clinica.php';
+        grooflow_descuentos_clinica_dispatch($pdo, $path, $method);
+
+        return;
+    }
+    if ($path === '/postgrados' || str_starts_with($path, '/postgrados/')) {
+        require_once dirname(__DIR__) . '/lib/grooflow_postgrados.php';
+        grooflow_postgrados_dispatch($pdo, $path, $method);
+
+        return;
+    }
+    if ($path === '/extornos' || str_starts_with($path, '/extornos/')) {
+        require_once dirname(__DIR__) . '/lib/grooflow_extornos.php';
+        grooflow_extornos_dispatch($pdo, $path, $method);
+
+        return;
+    }
+    if ($path === '/nomina-descuentos' || str_starts_with($path, '/nomina-descuentos/')) {
+        require_once dirname(__DIR__) . '/lib/grooflow_nomina_descuentos.php';
+        grooflow_nomina_dispatch($pdo, $path, $method);
+
+        return;
+    }
+    if ($path === '/firmas' || str_starts_with($path, '/firmas/')) {
+        require_once dirname(__DIR__) . '/lib/grooflow_firmas.php';
+        grooflow_firmas_dispatch($pdo, $path, $method);
 
         return;
     }

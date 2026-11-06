@@ -106,6 +106,21 @@ function grooflow_write_resource(PDO $pdo, string $key, mixed $incoming, ?string
         $ctx = grooflow_access_context($pdo);
         $full = grooflow_kv_get($pdo, $key);
         $visible = grooflow_project_resource($ctx, $key, $full);
+        // Contabilidad no-admin: solo muta `accounting` (debe/haber Cashback, IGV, caja, etc.).
+        if ($key === 'settings:system' && empty($ctx['admin'])) {
+            $accIn = is_array($incoming) && isset($incoming['accounting']) && is_array($incoming['accounting'])
+                ? $incoming['accounting']
+                : null;
+            if ($accIn === null) {
+                throw new RuntimeException('Solo puedes actualizar enlaces contables (accounting).');
+            }
+            $base = is_array($full) ? $full : (is_array($visible) ? $visible : []);
+            $incoming = $base;
+            $incoming['accounting'] = array_merge(
+                is_array($base['accounting'] ?? null) ? $base['accounting'] : [],
+                $accIn
+            );
+        }
         if (grooflow_revision($incoming) === grooflow_revision($visible)) {
             return ['ok' => true, 'revision' => grooflow_revision($visible)];
         }
